@@ -15,7 +15,9 @@ export function LogginScreen({ onLogin, supervisors }: LogginScreenProps) {
     const [showPassword, setShowPassword] = useState(false)
     const [error, setError] = useState("")
 
-    const handleLogin = (e: React.FormEvent) => {
+    const [loading, setLoading] = useState(false)
+
+    const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault()
         setError("")
 
@@ -24,23 +26,23 @@ export function LogginScreen({ onLogin, supervisors }: LogginScreenProps) {
             return
         }
 
-        // Procura na lista de supervisores
-        const user = supervisors.find((s) => s.email === email && s.password === password)
-
-        if (user) {
-            onLogin(user)
-        } else {
-            // Hardcoded master admin just in case none exists
-            if (email === "admin@reobote.com" && password === "admin123") {
-                onLogin({
-                    id: "master",
-                    name: "Administrador Master",
-                    email: "admin@reobote.com",
-                    role: "admin",
-                })
+        setLoading(true)
+        try {
+            const res = await fetch("/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email, password })
+            })
+            const data = await res.json()
+            if (!res.ok || !data.ok) {
+                setError(data.error || "E-mail ou senha incorretos.")
             } else {
-                setError("E-mail ou senha incorretos.")
+                onLogin(data.user)
             }
+        } catch (err) {
+            setError("Erro ao se comunicar com o servidor.")
+        } finally {
+            setLoading(false)
         }
     }
 
@@ -109,9 +111,10 @@ export function LogginScreen({ onLogin, supervisors }: LogginScreenProps) {
 
                         <button
                             type="submit"
-                            className="mt-2 flex h-11 w-full items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm hover:brightness-110 transition-all font-semibold"
+                            disabled={loading}
+                            className="mt-2 flex h-11 w-full items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm hover:brightness-110 transition-all font-semibold disabled:opacity-70"
                         >
-                            Entrar no sistema
+                            {loading ? "Validando..." : "Entrar no sistema"}
                         </button>
                     </form>
 

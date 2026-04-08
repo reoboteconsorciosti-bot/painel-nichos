@@ -19,6 +19,21 @@ export default function Page() {
 
   // Controle de login (se currentUser for null, exibe a tela de login)
   const [currentUser, setCurrentUser] = useState<SupervisorConfig | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok && d.user) {
+          setCurrentUser(d.user)
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setAuthLoading(false)
+      })
+  }, [])
 
   useEffect(() => {
     if (!currentUser) return
@@ -136,6 +151,17 @@ export default function Page() {
     return isOwner && !isSystemUser;
   })
 
+  if (authLoading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <div className="animate-pulse flex flex-col items-center gap-3">
+           <img src="/logo.png" alt="Reobote" className="h-16 w-auto opacity-50 grayscale" />
+           <p className="text-sm font-medium text-muted-foreground">Verificando sessão...</p>
+        </div>
+      </div>
+    )
+  }
+
   // Se não estiver logado, exibe apenas a tela de login
   if (!currentUser) {
     return (
@@ -144,6 +170,10 @@ export default function Page() {
         onLogin={(user) => setCurrentUser(user)}
       />
     )
+  }
+
+  const handleLogout = () => {
+    fetch("/api/auth/logout", { method: "POST" }).finally(() => setCurrentUser(null))
   }
 
   return (
@@ -157,7 +187,7 @@ export default function Page() {
       <div className="flex-1 flex flex-col w-full h-screen overflow-y-auto">
         <DashboardHeader
           user={currentUser}
-          onLogout={() => setCurrentUser(null)}
+          onLogout={handleLogout}
         />
         <main className="flex-1">
           {activeTab === "dashboard" ? (
