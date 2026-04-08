@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Lead {
+  id        Int      @id @default(autoincrement())
+  name      String?
+  phone     String?  @unique
+  nicho     String?
+  city      String?
+  state     String?
+  company   String?
+  fantasy   String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  listaLeads ListaLead[]
+
+  @@map("leads")
+  @@index([city], map: "idx_leads_city")
+  @@index([nicho], map: "idx_leads_nicho")
+  @@index([nicho, state, city], map: "idx_leads_nicho_state_city")
+}
+
+model ImportLog {
+  id         Int      @id @default(autoincrement())
+  fileName   String   @map("file_name")
+  totalRows  Int      @map("total_rows")
+  validRows  Int      @map("valid_rows")
+  invalidRows Int     @map("invalid_rows")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("import_logs")
+}
+
+model Lista {
+  id          Int      @id @default(autoincrement())
+  consultorId Int      @map("consultor_id")
+  nicho       String
+  quantidade  Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  leads ListaLead[]
+
+  @@map("listas")
+  @@index([consultorId], map: "idx_listas_consultor_id")
+  @@index([nicho], map: "idx_listas_nicho")
+}
+
+model ListaLead {
+  id      Int   @id @default(autoincrement())
+  listaId Int   @map("lista_id")
+  leadId  Int   @map("lead_id")
+
+  lista Lista @relation(fields: [listaId], references: [id], onDelete: Cascade)
+  lead  Lead  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("lista_leads")
+  @@unique([listaId, leadId], map: "uq_lista_leads_lista_id_lead_id")
+  @@index([leadId], map: "idx_lista_leads_lead_id")
+  @@index([listaId], map: "idx_lista_leads_lista_id")
+}
+
+model Consultant {
+  id           String   @id @default(uuid())
+  name         String
+  supervisorId String   @map("supervisor_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("consultants")
+  @@index([supervisorId], map: "idx_consultants_supervisor_id")
+  @@unique([supervisorId, name], map: "uq_consultants_supervisor_id_name")
+}
