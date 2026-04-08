@@ -21,7 +21,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Desativa a telemetria do Next.js e injeta ambiente de build
-ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_TELEMETRY_DISABLED=1
 
 # Importante: O Prisma Generate deve rodar durante o build para criar os binários do ORM
 RUN npx prisma generate
@@ -31,8 +31,8 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app
 
-ENV NODE_ENV production
-ENV NEXT_TELEMETRY_DISABLED 1
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
@@ -54,7 +54,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 USER nextjs
 
 EXPOSE 3000
-ENV PORT 3000
+ENV PORT=3000
 
 # Porta host padrão no Easypanel será convertida via Proxy, mas internamente roda na 3000.
 # Além disso, usamos o node chamando o server.js gerado pelo "standalone" do Next.js
