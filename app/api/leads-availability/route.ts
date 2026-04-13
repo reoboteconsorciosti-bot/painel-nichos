@@ -39,8 +39,8 @@ export async function POST(req: Request) {
       state: { equals: estado, mode: "insensitive" as const },
       ...(cidade
         ? {
-            city: { equals: cidade, mode: "insensitive" as const },
-          }
+          city: { equals: cidade, mode: "insensitive" as const },
+        }
         : {}),
     }
 

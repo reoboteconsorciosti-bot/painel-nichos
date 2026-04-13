@@ -207,6 +207,13 @@ export const INITIAL_USERS: SupervisorConfig[] = [
     role: "admin",
   },
   {
+    id: "adm-3",
+    name: process.env.NEXT_PUBLIC_NAMEADMIN3 || "",
+    email: process.env.NEXT_PUBLIC_EMAILADMIN3 || "",
+    password: process.env.NEXT_PUBLIC_PASSWORDADMIN3 || "",
+    role: "admin",
+  },
+  {
     id: "supervisor-1",
     name: process.env.NEXT_PUBLIC_NAMESUPERVISOR1 || "",
     email: process.env.NEXT_PUBLIC_EMAILSUPERVISOR1 || "",
