@@ -21,14 +21,16 @@ const getJwtSecretKey = () => {
 export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => ({}))) as LoginBody
-    const email = String(body.email || "").trim()
+    const email = String(body.email || "").trim().toLowerCase()
     const password = String(body.password || "")
 
     if (!email || !password) {
       return NextResponse.json({ ok: false, error: "Credenciais inválidas." }, { status: 400 })
     }
 
-    const permitted = getInitialUsers().find(s => s.email === email && s.password === password)
+    const permitted = getInitialUsers().find(
+      (s) => s.email.trim().toLowerCase() === email && s.password.trim() === password.trim(),
+    )
 
     if (!permitted) {
       return NextResponse.json({ ok: false, error: "E-mail ou senha incorretos." }, { status: 401 })
