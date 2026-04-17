@@ -30,6 +30,26 @@ type GeneratedLead = {
   fantasy: string | null
 }
 
+const normalizePhoneForWhatsApp = (phone: string | null | undefined): string | null => {
+  const digitsOnly = String(phone ?? "").replace(/\D/g, "")
+  if (!digitsOnly) return null
+
+  let normalized = digitsOnly
+  if (!normalized.startsWith("55")) {
+    normalized = `55${normalized}`
+  }
+
+  // Minimo esperado: codigo do pais + DDD + numero local.
+  if (normalized.length < 12) return null
+  return normalized
+}
+
+const buildWhatsAppLink = (phone: string | null | undefined): string | null => {
+  const normalizedPhone = normalizePhoneForWhatsApp(phone)
+  if (!normalizedPhone) return null
+  return `https://wa.me/${normalizedPhone}`
+}
+
 export interface DashboardContentProps {
   consultants: string[]
 }
@@ -355,6 +375,8 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
       const uf = (l.state ?? "").trim()
       const nome = (l.name ?? "").trim()
       const whats = String(l.phone ?? "").trim()
+      const whatsappNumber = normalizePhoneForWhatsApp(l.phone)
+      const whatsappLink = buildWhatsAppLink(l.phone)
 
       if (y + rowH > pageHeight - marginBottom) {
         doc.addPage()
@@ -380,7 +402,14 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
       doc.text(truncate(cidade, colW.cidade - cellPadX * 2), colX.cidade + cellPadX, yText)
       doc.text(truncate(uf, colW.uf - cellPadX * 2), colX.uf + cellPadX, yText)
       doc.text(truncate(nome || razao || "(sem nome)", colW.nome - cellPadX * 2), colX.nome + cellPadX, yText)
-      doc.text(truncate(whats, colW.whats - cellPadX * 2), colX.whats + cellPadX, yText)
+      const whatsLabel = truncate(whatsappNumber ?? whats, colW.whats - cellPadX * 2)
+      if (whatsappLink) {
+        doc.setTextColor(0, 102, 204)
+        doc.textWithLink(whatsLabel, colX.whats + cellPadX, yText, { url: whatsappLink })
+        doc.setTextColor(0, 0, 0)
+      } else {
+        doc.text(whatsLabel, colX.whats + cellPadX, yText)
+      }
 
       y += rowH
     }

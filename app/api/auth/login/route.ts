@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { SignJWT } from "jose"
-import { INITIAL_USERS } from "@/lib/data"
 import { serialize } from "cookie"
+import { getInitialUsers } from "@/lib/server-users"
 
 export const runtime = "nodejs"
 
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Credenciais inválidas." }, { status: 400 })
     }
 
-    const permitted = INITIAL_USERS.find(s => s.email === email && s.password === password)
+    const permitted = getInitialUsers().find(s => s.email === email && s.password === password)
 
     if (!permitted) {
       return NextResponse.json({ ok: false, error: "E-mail ou senha incorretos." }, { status: 401 })

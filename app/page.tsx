@@ -6,12 +6,12 @@ import { DashboardContent } from "@/components/dashboard-content"
 import { Sidebar } from "@/components/sidebar"
 import { SupervisorDialog } from "@/components/supervisor-dialog"
 import { LogginScreen } from "@/components/loggin-screen"
-import { INITIAL_USERS, CONSULTORES, type SupervisorConfig, type Consultant } from "@/lib/data"
+import { CONSULTORES, type SupervisorConfig, type Consultant } from "@/lib/data"
 import { Plus, X, User as UserIcon } from "lucide-react"
 
 export default function Page() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "admin" | "team">("dashboard")
-  const [supervisors, setSupervisors] = useState<SupervisorConfig[]>(INITIAL_USERS)
+  const [supervisors, setSupervisors] = useState<SupervisorConfig[]>([])
   const [consultants, setConsultants] = useState<Consultant[]>(CONSULTORES)
   const [isSupervisorDialogOpen, setIsSupervisorDialogOpen] = useState(false)
   const [newConsultantName, setNewConsultantName] = useState("")
@@ -33,6 +33,13 @@ export default function Page() {
       .finally(() => {
         setAuthLoading(false)
       })
+
+    fetch("/api/supervisors")
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok && d.supervisors) setSupervisors(d.supervisors)
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {

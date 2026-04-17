@@ -191,43 +191,7 @@ export interface Consultant {
   supervisorId: string // Vincula o consultor ao ID do supervisor
 }
 
-export const INITIAL_USERS: SupervisorConfig[] = [
-  {
-    id: "admin-1",
-    name: process.env.NEXT_PUBLIC_NAMEADMIN1 || "",
-    email: process.env.NEXT_PUBLIC_EMAILADMIN1 || "",
-    password: process.env.NEXT_PUBLIC_PASSWORDADMIN1 || "",
-    role: "admin",
-  },
-  {
-    id: "admin-2",
-    name: process.env.NEXT_PUBLIC_NAMEADMIN2 || "",
-    email: process.env.NEXT_PUBLIC_EMAILADMIN2 || "",
-    password: process.env.NEXT_PUBLIC_PASSWORDADMIN2 || "",
-    role: "admin",
-  },
-  {
-    id: "adm-3",
-    name: process.env.NEXT_PUBLIC_NAMEADMIN3 || "",
-    email: process.env.NEXT_PUBLIC_EMAILADMIN3 || "",
-    password: process.env.NEXT_PUBLIC_PASSWORDADMIN3 || "",
-    role: "admin",
-  },
-  {
-    id: "supervisor-1",
-    name: process.env.NEXT_PUBLIC_NAMESUPERVISOR1 || "",
-    email: process.env.NEXT_PUBLIC_EMAILSUPERVISOR1 || "",
-    password: process.env.NEXT_PUBLIC_PASSWORDSUPERVISOR1 || "",
-    role: "supervisor",
-  },
-  {
-    id: "supervisor-2",
-    name: process.env.NEXT_PUBLIC_NAMESUPERVISOR2 || "",
-    email: process.env.NEXT_PUBLIC_EMAILSUPERVISOR2 || "",
-    password: process.env.NEXT_PUBLIC_PASSWORDSUPERVISOR2 || "",
-    role: "supervisor",
-  },
-]
+// As contas e senhas agora são importadas pelo lado do servidor em lib/server-users.ts
 
 export const CONSULTORES: Consultant[] = [
 ]
