@@ -48,6 +48,7 @@ RUN chown nextjs:nodejs .next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+
 # (Opcional) Copia a pasta prisma caso precise rodar migrations no container rodando a aplicação
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 
