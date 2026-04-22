@@ -17,6 +17,11 @@ export default function Page() {
   const [newConsultantName, setNewConsultantName] = useState("")
   const [teamStats, setTeamStats] = useState<Record<number, { historic: number, active: number }> | null>(null)
 
+  const [whatsNotifyNumber, setWhatsNotifyNumber] = useState("")
+  const [whatsNotifyLoading, setWhatsNotifyLoading] = useState(false)
+  const [whatsNotifyError, setWhatsNotifyError] = useState<string | null>(null)
+  const [whatsNotifySaved, setWhatsNotifySaved] = useState(false)
+
   // Controle de login (se currentUser for null, exibe a tela de login)
   const [currentUser, setCurrentUser] = useState<SupervisorConfig | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -84,6 +89,23 @@ export default function Page() {
         })
         .catch(() => {})
     }
+  }, [activeTab, currentUser])
+
+  useEffect(() => {
+    if (activeTab !== "admin" || !currentUser || currentUser.role !== "admin") return
+
+    setWhatsNotifyLoading(true)
+    setWhatsNotifyError(null)
+    setWhatsNotifySaved(false)
+    fetch("/api/admin/whatsapp-notify", { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && d.ok) setWhatsNotifyNumber(String(d.value ?? ""))
+      })
+      .catch(() => {
+        setWhatsNotifyError("Falha ao carregar o numero do WhatsApp")
+      })
+      .finally(() => setWhatsNotifyLoading(false))
   }, [activeTab, currentUser])
 
   const handleTabChange = (tab: "dashboard" | "admin" | "team") => {
@@ -183,6 +205,31 @@ export default function Page() {
     fetch("/api/auth/logout", { method: "POST" }).finally(() => setCurrentUser(null))
   }
 
+  const handleSaveWhatsNotifyNumber = async () => {
+    if (!currentUser || currentUser.role !== "admin") return
+    setWhatsNotifyLoading(true)
+    setWhatsNotifyError(null)
+    setWhatsNotifySaved(false)
+    try {
+      const res = await fetch("/api/admin/whatsapp-notify", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: whatsNotifyNumber }),
+      })
+      const data = (await res.json().catch(() => null)) as unknown
+      if (!res.ok || !data || typeof data !== "object" || (data as { ok?: unknown }).ok !== true) {
+        throw new Error("failed")
+      }
+      setWhatsNotifyNumber(String((data as { value?: unknown }).value ?? ""))
+      setWhatsNotifySaved(true)
+    } catch {
+      setWhatsNotifyError("Nao foi possivel salvar o numero")
+    } finally {
+      setWhatsNotifyLoading(false)
+    }
+  }
+
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
       <Sidebar
@@ -279,12 +326,46 @@ export default function Page() {
                     Acesso negado. Apenas administradores podem gerenciar outros usuários.
                   </div>
                 ) : (
-                  <button
-                    onClick={() => setIsSupervisorDialogOpen(true)}
-                    className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:brightness-110"
-                  >
-                    Gerenciar Equipe ({supervisors.length})
-                  </button>
+                  <div className="mx-auto max-w-lg space-y-4">
+                    <button
+                      onClick={() => setIsSupervisorDialogOpen(true)}
+                      className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:brightness-110"
+                    >
+                      Gerenciar Equipe ({supervisors.length})
+                    </button>
+
+                    <div className="rounded-xl border border-border bg-secondary/20 p-4 text-left">
+                      <p className="text-sm font-semibold text-foreground">WhatsApp - Numero de notificacao</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Numero fixo que recebe a mensagem quando uma lista for gerada.
+                      </p>
+
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          value={whatsNotifyNumber}
+                          onChange={(e) => setWhatsNotifyNumber(e.target.value)}
+                          className="flex-1 h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                          placeholder="Ex: 5599999999999"
+                          disabled={whatsNotifyLoading}
+                        />
+                        <button
+                          onClick={handleSaveWhatsNotifyNumber}
+                          className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60"
+                          disabled={whatsNotifyLoading}
+                        >
+                          {whatsNotifyLoading ? "Salvando..." : "Salvar"}
+                        </button>
+                      </div>
+                      {whatsNotifySaved && (
+                        <p className="text-xs text-emerald-600 mt-2">Salvo com sucesso.</p>
+                      )}
+                      {whatsNotifyError && (
+                        <p className="text-xs text-destructive mt-2">{whatsNotifyError}</p>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>

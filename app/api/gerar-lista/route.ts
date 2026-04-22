@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import type { Prisma } from "@prisma/client"
+import { Prisma, type Prisma as PrismaType } from "@prisma/client"
 
 export const runtime = "nodejs"
 
@@ -10,6 +10,7 @@ type CreateListaBody = {
   estado?: unknown
   cidade?: unknown
   nicho?: unknown
+  consultantName?: unknown
 }
 
 function normalizeCity(input: string): string {
@@ -29,7 +30,76 @@ function parsePositiveInt(input: unknown): number | null {
   return i
 }
 
-async function checkMonthlyLimit(tx: Prisma.TransactionClient, consultorId: number, requestedQuantity: number) {
+async function getDefaultNotifyNumber(): Promise<string> {
+  const fromEnv = normalizeNotifyNumber(process.env.WHATSAPP_NOTIFY_NUMBER)
+  try {
+    const rows = await prisma.$queryRaw<Array<{ value: string }>>(
+      Prisma.sql`SELECT value FROM app_settings WHERE key = ${"whatsapp_notify_number"} LIMIT 1`,
+    )
+    const fromDb = normalizeNotifyNumber(rows[0]?.value)
+    return fromDb || fromEnv
+  } catch {
+    return fromEnv
+  }
+}
+
+function normalizeNotifyNumber(input: unknown): string {
+  const raw = String(input ?? "").trim()
+  if (!raw) return ""
+  const digits = raw.replace(/\D+/g, "")
+  if (!digits) return ""
+  // aceita 55 + DDD + numero, ou DDD + numero
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`
+  if (digits.length === 12 || digits.length === 13) return digits
+  return digits
+}
+
+function formatLeadListWhatsAppMessage(args: {
+  consultantName: string
+  nicho: string
+  cidade: string
+  estado: string
+  leadCount: number
+  listaId: number
+}): string {
+  const consultor = (args.consultantName ?? "").trim().toUpperCase() || "(SEM CONSULTOR)"
+  const uf = (args.estado ?? "").trim().toUpperCase().slice(0, 2)
+  const cidade = (args.cidade ?? "").trim()
+  const nicho = (args.nicho ?? "").trim().toUpperCase()
+  return [
+    "Lista gerada com sucesso.",
+    `Consultor: ${consultor}`,
+    `Nicho: ${nicho}`,
+    `Regiao: ${cidade}${cidade ? " - " : ""}${uf}`,
+    `Leads: ${args.leadCount}`,
+    `Lista ID: ${args.listaId}`,
+  ].join("\n")
+}
+
+async function sendWhatsAppMessage(params: { to: string; message: string }) {
+  const baseUrl = (process.env.WHATSAPP_API_URL ?? "").trim().replace(/\/+$/, "")
+  const userId = (process.env.WHATSAPP_USER_ID ?? "").trim()
+  if (!baseUrl || !userId) {
+    throw new Error("whatsapp_not_configured")
+  }
+
+  const res = await fetch(`${baseUrl}/message/send-text/${encodeURIComponent(userId)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ number: params.to, message: params.message }),
+  })
+
+  const data = (await res.json().catch(() => null)) as unknown
+  if (!res.ok) {
+    const err =
+      data && typeof data === "object" && data && "error" in data
+        ? String((data as { error?: unknown }).error)
+        : `whatsapp_send_failed_status_${res.status}`
+    throw new Error(err)
+  }
+}
+
+async function checkMonthlyLimit(tx: PrismaType.TransactionClient, consultorId: number, requestedQuantity: number) {
   const now = new Date()
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
 
@@ -64,13 +134,15 @@ export async function POST(req: Request) {
   const estadoRaw = String(body.estado ?? "").trim()
   const cidadeRaw = String(body.cidade ?? "").trim()
   const nichoRaw = String(body.nicho ?? "").trim()
+  const consultantNameRaw = String(body.consultantName ?? "").trim()
 
   const quantidade = quantidadeRaw
   const estado = estadoRaw.toUpperCase().slice(0, 2)
   const cidade = cidadeRaw ? normalizeCity(cidadeRaw) : ""
   const nicho = nichoRaw
+  const consultantName = consultantNameRaw
 
-  if (!consultorId || !quantidade || !estado || !nicho) {
+  if (!consultorId || !quantidade || !estado || !nicho || !consultantName) {
     return NextResponse.json(
       { ok: false, error: "invalid_payload" },
       { status: 400 },
@@ -78,7 +150,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const result = await prisma.$transaction(async (tx: PrismaType.TransactionClient) => {
       // 1. Validar se o limite não estourou (proteção contra concorrência via transaction)
       await checkMonthlyLimit(tx, consultorId, quantidade)
 
@@ -139,6 +211,23 @@ export async function POST(req: Request) {
 
       return { lista, leads }
     })
+
+    // Disparar WhatsApp após a criação bem-sucedida
+    try {
+      const notifyNumber = await getDefaultNotifyNumber()
+      if (!notifyNumber) throw new Error("whatsapp_notify_number_missing")
+      const msg = formatLeadListWhatsAppMessage({
+        consultantName,
+        nicho,
+        cidade: cidadeRaw,
+        estado,
+        leadCount: result.leads.length,
+        listaId: result.lista.id,
+      })
+      await sendWhatsAppMessage({ to: notifyNumber, message: msg })
+    } catch {
+      // não falhar a geração da lista se o WhatsApp falhar
+    }
 
     return NextResponse.json({ ok: true, ...result })
   } catch (e) {

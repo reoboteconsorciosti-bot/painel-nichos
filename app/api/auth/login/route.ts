@@ -29,7 +29,7 @@ export async function POST(req: Request) {
     }
 
     const permitted = getInitialUsers().find(
-      (s) => s.email.trim().toLowerCase() === email && s.password.trim() === password.trim(),
+      (s) => s.email.trim().toLowerCase() === email && String(s.password ?? "").trim() === password.trim(),
     )
 
     if (!permitted) {

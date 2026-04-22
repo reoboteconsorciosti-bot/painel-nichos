@@ -75,3 +75,11 @@ model Consultant {
   @@index([supervisorId], map: "idx_consultants_supervisor_id")
   @@unique([supervisorId, name], map: "uq_consultants_supervisor_id_name")
 }
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}

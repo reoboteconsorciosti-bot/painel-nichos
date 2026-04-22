@@ -118,6 +118,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
         cidade: city,
         nicho,
         quantidade,
+        consultantName,
       }),
     })
 
