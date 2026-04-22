@@ -392,13 +392,17 @@ app.post('/instance/disconnect/:userId', async (req: Request, res: Response) => 
   }
 });
 
-app.all('/webhook/:rest*', (_req: Request, res: Response) => {
+const webhookDisabled = (_req: Request, res: Response) => {
   res.status(410).json({
     ok: false,
     error: "webhook_disabled",
     message: "Endpoints de webhook/n8n foram desativados neste projeto.",
   })
-})
+}
+
+app.all('/webhook/set/:userId', webhookDisabled)
+app.all('/webhook/get/:userId', webhookDisabled)
+app.all('/webhook/list', webhookDisabled)
 
 function calcularTempoDigitacao(texto: string) {
   const caracteresPorSegundo = 16;
