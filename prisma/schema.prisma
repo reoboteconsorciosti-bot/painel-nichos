@@ -43,6 +43,9 @@ model Lista {
   nicho       String
   quantidade  Int      @default(0)
   createdAt   DateTime @default(now()) @map("created_at")
+  
+  agendorStatus String    @default("none") @map("agendor_status")
+  agendorSentAt DateTime? @map("agendor_sent_at")
 
   leads ListaLead[]
 
