@@ -1,16 +1,16 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { type DragEvent, useEffect, useState } from "react"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { DashboardContent } from "@/components/dashboard-content"
 import { Sidebar } from "@/components/sidebar"
 import { SupervisorDialog } from "@/components/supervisor-dialog"
 import { LogginScreen } from "@/components/loggin-screen"
-import { CONSULTORES, type SupervisorConfig, type Consultant } from "@/lib/data"
+import { CONSULTORES, NICHES, type SupervisorConfig, type Consultant } from "@/lib/data"
 import { Plus, X, User as UserIcon } from "lucide-react"
 
 export default function Page() {
-  const [activeTab, setActiveTab] = useState<"dashboard" | "admin" | "team">("dashboard")
+  const [activeTab, setActiveTab] = useState<"dashboard" | "admin" | "team" | "import">("dashboard")
   const [supervisors, setSupervisors] = useState<SupervisorConfig[]>([])
   const [consultants, setConsultants] = useState<Consultant[]>(CONSULTORES)
   const [isSupervisorDialogOpen, setIsSupervisorDialogOpen] = useState(false)
@@ -21,6 +21,14 @@ export default function Page() {
   const [whatsNotifyLoading, setWhatsNotifyLoading] = useState(false)
   const [whatsNotifyError, setWhatsNotifyError] = useState<string | null>(null)
   const [whatsNotifySaved, setWhatsNotifySaved] = useState(false)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importDragActive, setImportDragActive] = useState(false)
+  const [importNicheId, setImportNicheId] = useState("")
+  const [importForceCity, setImportForceCity] = useState("")
+  const [importForceState, setImportForceState] = useState("")
+  const [importLoading, setImportLoading] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importResult, setImportResult] = useState<Record<string, unknown> | null>(null)
 
   // Controle de login (se currentUser for null, exibe a tela de login)
   const [currentUser, setCurrentUser] = useState<SupervisorConfig | null>(null)
@@ -108,7 +116,7 @@ export default function Page() {
       .finally(() => setWhatsNotifyLoading(false))
   }, [activeTab, currentUser])
 
-  const handleTabChange = (tab: "dashboard" | "admin" | "team") => {
+  const handleTabChange = (tab: "dashboard" | "admin" | "team" | "import") => {
     setActiveTab(tab)
     if (tab === "admin") {
       setIsSupervisorDialogOpen(true)
@@ -230,6 +238,85 @@ export default function Page() {
     }
   }
 
+  const handleImportUpload = async () => {
+    if (!importFile) {
+      setImportError("Selecione um arquivo .xlsx ou .csv")
+      return
+    }
+    if (!importNicheId) {
+      setImportError("Selecione o nicho que deve ser populado")
+      return
+    }
+
+    setImportLoading(true)
+    setImportError(null)
+    setImportResult(null)
+
+    try {
+      const formData = new FormData()
+      formData.append("file", importFile)
+      formData.append("nichoFolder", importNicheId)
+      formData.append("forceCity", importForceCity)
+      formData.append("forceState", importForceState)
+      formData.append("dryRun", "false")
+      formData.append("maxRowsPerFile", "5000")
+
+      const res = await fetch("/api/import/upload", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      })
+
+      const data = (await res.json().catch(() => null)) as unknown
+      if (!res.ok || !data || typeof data !== "object") {
+        throw new Error("Falha ao importar arquivo")
+      }
+
+      const payload = data as { ok?: unknown; error?: unknown }
+      if (payload.ok !== true) {
+        throw new Error(String(payload.error ?? "Falha ao importar arquivo"))
+      }
+
+      setImportResult(data as Record<string, unknown>)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Falha ao importar arquivo"
+      setImportError(msg)
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  const handleClearImportSelection = () => {
+    setImportFile(null)
+    setImportNicheId("")
+    setImportForceCity("")
+    setImportForceState("")
+    setImportError(null)
+    setImportResult(null)
+  }
+
+  const handleImportDragOver = (e: DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setImportDragActive(true)
+  }
+
+  const handleImportDragLeave = (e: DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setImportDragActive(false)
+  }
+
+  const handleImportDrop = (e: DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setImportDragActive(false)
+    const droppedFile = e.dataTransfer.files?.[0] ?? null
+    if (!droppedFile) return
+    setImportFile(droppedFile)
+    setImportError(null)
+  }
+
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
       <Sidebar
@@ -311,6 +398,136 @@ export default function Page() {
                       </button>
                     </div>
                   ))
+                )}
+              </div>
+            </div>
+          ) : activeTab === "import" ? (
+            <div className="mx-auto w-full max-w-3xl p-6">
+              <div className="rounded-xl border border-border bg-secondary/20 p-6 text-left space-y-4">
+                <h2 className="text-2xl font-semibold">Importacao de planilha</h2>
+                <p className="text-sm text-muted-foreground">
+                  Envie um arquivo Excel/CSV. A higienizacao, normalizacao de headers e padronizacao
+                  continuam sendo feitas no backend.
+                </p>
+
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <label htmlFor="import-niche" className="text-sm font-medium text-foreground">
+                      Nicho para popular no banco
+                    </label>
+                    <select
+                      id="import-niche"
+                      value={importNicheId}
+                      onChange={(e) => setImportNicheId(e.target.value)}
+                      className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                      disabled={importLoading}
+                    >
+                      <option value="">Selecione um nicho</option>
+                      {NICHES.map((niche) => (
+                        <option key={niche.id} value={niche.id}>
+                          {niche.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground">
+                      Cidade e estado continuam sendo lidos da planilha e higienizados pelo backend.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label htmlFor="import-force-city" className="text-sm font-medium text-foreground">
+                        Cidade destino (opcional)
+                      </label>
+                      <input
+                        id="import-force-city"
+                        type="text"
+                        value={importForceCity}
+                        onChange={(e) => setImportForceCity(e.target.value)}
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                        placeholder="Ex: Sao Paulo"
+                        disabled={importLoading}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="import-force-state" className="text-sm font-medium text-foreground">
+                        Estado destino (opcional)
+                      </label>
+                      <input
+                        id="import-force-state"
+                        type="text"
+                        value={importForceState}
+                        onChange={(e) => setImportForceState(e.target.value)}
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                        placeholder="Ex: SP"
+                        maxLength={2}
+                        disabled={importLoading}
+                      />
+                    </div>
+                  </div>
+
+                  <label
+                    htmlFor="import-file"
+                    onDragEnter={handleImportDragOver}
+                    onDragOver={handleImportDragOver}
+                    onDragLeave={handleImportDragLeave}
+                    onDrop={handleImportDrop}
+                    className={`flex h-40 w-full cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed bg-background/50 px-4 text-center transition-colors ${
+                      importDragActive
+                        ? "border-primary/80"
+                        : "border-border hover:border-primary/60"
+                    }`}
+                  >
+                    <p className="text-sm font-medium text-foreground">
+                      Arraste e solte seu arquivo aqui
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      ou clique para selecionar (.xlsx ou .csv)
+                    </p>
+                    {importFile && (
+                      <p className="mt-3 text-xs text-primary">
+                        Arquivo selecionado: {importFile.name}
+                      </p>
+                    )}
+                  </label>
+                  <input
+                    id="import-file"
+                    type="file"
+                    accept=".xlsx,.csv"
+                    onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+                    className="hidden"
+                    disabled={importLoading}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleImportUpload}
+                    disabled={importLoading || !importFile}
+                    className="h-10 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60"
+                  >
+                    {importLoading ? "Importando..." : "Importar arquivo"}
+                  </button>
+                  <button
+                    onClick={handleClearImportSelection}
+                    disabled={importLoading || !importFile}
+                    className="h-10 rounded-md border border-border bg-background px-4 text-sm font-semibold text-foreground hover:bg-secondary disabled:opacity-60"
+                  >
+                    Desimportar arquivo
+                  </button>
+                </div>
+
+                {importError && (
+                  <p className="text-xs text-destructive">{importError}</p>
+                )}
+
+                {importResult && (
+                  <div className="rounded-md border border-border bg-background p-3">
+                    <p className="text-sm font-semibold mb-2">Resultado da importacao</p>
+                    <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                      {JSON.stringify(importResult, null, 2)}
+                    </pre>
+                  </div>
                 )}
               </div>
             </div>

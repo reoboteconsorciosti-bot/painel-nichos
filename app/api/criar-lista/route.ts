@@ -189,10 +189,8 @@ function normalizeKey(input: string): string {
 function mapFolderToNicheId(folderName: string): string {
   const folderKey = normalizeKey(folderName)
 
-  if (folderKey.includes("EMPRESAS")) {
-    // Mantemos os nomes das pastas (EMPRESAS MS/MT) para compatibilidade com dados já importados
-    return folderName
-  }
+  // Mapeia variações de "Empresas/Empresários" para o nicho canônico usado na UI.
+  if (folderKey.includes("EMPRESAS") || folderKey.includes("EMPRESAR")) return "empresarios"
 
   if (folderKey.includes("ADVOG")) return "advogados"
   if (folderKey.includes("ARQUIT")) return "arquitetos"
@@ -617,6 +615,7 @@ function normalizeRow(
   row: RawRow,
   nicho: string,
   origemArquivo: string,
+  options?: { forceCity?: string; forceState?: string },
 ): { lead: NormalizedLead | null; reason?: "missing_or_invalid_phone"; debug?: Record<string, string> } {
   const { mapped } = mapHeadersToStandard(row)
 
@@ -679,8 +678,8 @@ function normalizeRow(
 
   // normalização de texto e nulls
   const razao_social = normalizeText(mapped.company || mapped.fantasy) || null
-  const cidade = normalizeCity(mapped.city) || null
-  const estado = normalizeUf(mapped.state) || null
+  const cidade = normalizeCity(options?.forceCity ?? mapped.city) || null
+  const estado = normalizeUf(options?.forceState ?? mapped.state) || null
 
   return {
     lead: {
@@ -906,6 +905,8 @@ export async function POST(req: Request) {
     includeSubdirs?: boolean
     onlyNichos?: string[]
     onlyFiles?: string[]
+    forceCity?: string
+    forceState?: string
   }
   const dryRun = body.dryRun === true
   const batchSize = Number.isFinite(body.batchSize) && (body.batchSize as number) > 0 ? Math.min(body.batchSize as number, 5000) : 1000
@@ -936,6 +937,8 @@ export async function POST(req: Request) {
     Number.isFinite(body.maxRowsPerFile) && (body.maxRowsPerFile as number) > 0
       ? Math.min(body.maxRowsPerFile as number, 200000)
       : 5000
+  const forceCity = String(body.forceCity ?? "").trim()
+  const forceState = String(body.forceState ?? "").trim()
 
   const stats: EtlStats = {
     nichos: 0,
@@ -1039,7 +1042,10 @@ export async function POST(req: Request) {
 
         let batch: NormalizedLead[] = []
         for (const row of rows) {
-          const normalized = normalizeRow(row, nichoId, origemArquivo)
+          const normalized = normalizeRow(row, nichoId, origemArquivo, {
+            forceCity: forceCity || undefined,
+            forceState: forceState || undefined,
+          })
           if (!normalized.lead) {
             if (!isRowCompletelyEmpty(row)) {
               stats.linhasInvalidas += 1

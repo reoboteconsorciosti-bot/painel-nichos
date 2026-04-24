@@ -13,6 +13,19 @@ type CreateListaBody = {
   consultantName?: unknown
 }
 
+function buildNichoWhere(nicho: string) {
+  const normalized = nicho.trim().toLowerCase()
+  if (normalized === "empresarios" || normalized.includes("empresas")) {
+    return {
+      OR: [
+        { nicho: { equals: "empresarios", mode: "insensitive" as const } },
+        { nicho: { startsWith: "EMPRESAS", mode: "insensitive" as const } },
+      ],
+    }
+  }
+  return { nicho: { equals: nicho, mode: "insensitive" as const } }
+}
+
 function normalizeCity(input: string): string {
   return input
     .trim()
@@ -157,7 +170,7 @@ export async function POST(req: Request) {
       // Opção B (sem coluna nicho em leads): não filtra no banco.
       // Seleciona leads que ainda não foram atribuídos a nenhuma lista.
       const baseWhere = {
-        nicho: { equals: nicho, mode: "insensitive" as const },
+        ...buildNichoWhere(nicho),
         state: { equals: estado, mode: "insensitive" as const },
         ...(cidade
           ? {

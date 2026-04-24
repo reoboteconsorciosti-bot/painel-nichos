@@ -76,10 +76,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
 
   const mapNichoForApi = (nichoId: string, uf: string): string => {
     if (nichoId === "empresarios") {
-      const u = (uf ?? "").trim().toUpperCase().slice(0, 2)
-      if (u === "MS") return "EMPRESAS MS"
-      if (u === "MT") return "EMPRESAS MT"
-      return "EMPRESAS"
+      return "empresarios"
     }
     return nichoId
   }
@@ -434,9 +431,6 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
         </div>
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5">
           <CalendarDays className="size-4 text-primary" />
-          <span className="text-sm text-muted-foreground">
-            <span className="font-semibold text-foreground">{schedules.length}</span> agendamento{schedules.length !== 1 ? "s" : ""}
-          </span>
         </div>
       </div>
 
