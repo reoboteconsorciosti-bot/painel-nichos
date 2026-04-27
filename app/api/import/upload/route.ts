@@ -120,10 +120,17 @@ export async function POST(req: Request) {
   try {
     const sourceRoot = process.env.LEADS_SOURCE_DIR
     const etlToken = process.env.ETL_TOKEN
+    
+    console.log("[UPLOAD] LEADS_SOURCE_DIR:", sourceRoot)
+    console.log("[UPLOAD] ETL_TOKEN exists:", !!etlToken)
+    console.log("[UPLOAD] Platform:", process.platform)
+    
     if (!sourceRoot) {
+      console.error("[UPLOAD] ERROR: LEADS_SOURCE_DIR not configured")
       return NextResponse.json({ ok: false, error: "LEADS_SOURCE_DIR_not_configured" }, { status: 500 })
     }
     if (!etlToken) {
+      console.error("[UPLOAD] ERROR: ETL_TOKEN not configured")
       return NextResponse.json({ ok: false, error: "ETL_TOKEN_not_configured" }, { status: 500 })
     }
 
@@ -143,7 +150,23 @@ export async function POST(req: Request) {
     const targetNichoFolder = nichoFromBody
       ? sanitizeFolderName(nichoFromBody)
       : inferNichoFolderFromFileName(originalName)
-    const uploadDir = path.join(sourceRoot, targetNichoFolder)
+    
+    console.log("[UPLOAD] Target folder:", targetNichoFolder)
+    
+    // Verifica se sourceRoot existe e é acessível
+    let uploadDir: string
+    try {
+      await fs.access(sourceRoot)
+      uploadDir = path.join(sourceRoot, targetNichoFolder)
+      console.log("[UPLOAD] Using LEADS_SOURCE_DIR:", sourceRoot)
+    } catch (accessError) {
+      // Se não conseguir acessar (ex: caminho UNC do Windows no Linux), usa tmpdir
+      const { tmpdir } = await import("node:os")
+      uploadDir = path.join(tmpdir(), "painel-nichos-uploads", targetNichoFolder)
+      console.log("[UPLOAD] LEADS_SOURCE_DIR not accessible, using temp dir:", uploadDir)
+      console.error("[UPLOAD] Access error:", accessError)
+    }
+    
     await fs.mkdir(uploadDir, { recursive: true })
 
     const safeBaseName = path
@@ -155,7 +178,9 @@ export async function POST(req: Request) {
     uploadedPath = path.join(uploadDir, storedFileName)
 
     const arrayBuffer = await fileEntry.arrayBuffer()
+    console.log("[UPLOAD] Writing file to:", uploadedPath, "Size:", arrayBuffer.byteLength)
     await fs.writeFile(uploadedPath, Buffer.from(arrayBuffer))
+    console.log("[UPLOAD] File written successfully")
 
     const dryRun = String(form.get("dryRun") ?? "").toLowerCase() === "true"
     const batchSize = parseOptionalPositiveInt(form.get("batchSize")) ?? 1000
@@ -163,6 +188,8 @@ export async function POST(req: Request) {
     const forceCity = String(form.get("forceCity") ?? "").trim()
     const forceState = String(form.get("forceState") ?? "").trim()
 
+    // Determina se usou diretório temporário (fallback) ou o original
+    const usedTempDir = !uploadDir.startsWith(sourceRoot)
     const proxiedBody = {
       dryRun,
       batchSize,
@@ -174,6 +201,8 @@ export async function POST(req: Request) {
       onlyFiles: [storedFileName],
       maxFiles: 1,
       maxTotalFiles: 1,
+      // Se usou temp dir, passa o caminho real para o processador
+      ...(usedTempDir && { sourceRootOverride: path.dirname(uploadDir) }),
     }
 
     const proxiedReq = new Request("http://internal/api/criar-lista", {
@@ -185,8 +214,13 @@ export async function POST(req: Request) {
       body: JSON.stringify(proxiedBody),
     })
 
+    console.log("[UPLOAD] Calling import processor...")
     const proxiedRes = await runImportFromFolder(proxiedReq)
-    const responseJson = (await proxiedRes.json().catch(() => null)) as unknown
+    console.log("[UPLOAD] Import processor response status:", proxiedRes.status)
+    const responseJson = (await proxiedRes.json().catch((e) => {
+      console.error("[UPLOAD] Error parsing response:", e)
+      return null
+    })) as unknown
 
     return NextResponse.json(
       {
@@ -198,6 +232,10 @@ export async function POST(req: Request) {
     )
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
+    console.error("[UPLOAD] ERROR in upload route:", msg)
+    if (e instanceof Error && e.stack) {
+      console.error("[UPLOAD] Stack:", e.stack)
+    }
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   } finally {
     if (uploadedPath) {

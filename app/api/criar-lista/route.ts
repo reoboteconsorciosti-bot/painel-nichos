@@ -879,23 +879,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
   }
 
-  const sourceRoot = process.env.LEADS_SOURCE_DIR
-  const databaseUrl = process.env.DATABASE_URL
-
-  if (!sourceRoot) {
-    return NextResponse.json(
-      { ok: false, error: "LEADS_SOURCE_DIR_not_configured" },
-      { status: 500 },
-    )
-  }
-
-  if (!databaseUrl) {
-    return NextResponse.json(
-      { ok: false, error: "DATABASE_URL_not_configured" },
-      { status: 500 },
-    )
-  }
-
   const body = (await req.json().catch(() => ({}))) as {
     dryRun?: boolean
     batchSize?: number
@@ -907,6 +890,26 @@ export async function POST(req: Request) {
     onlyFiles?: string[]
     forceCity?: string
     forceState?: string
+    sourceRootOverride?: string
+  }
+
+  const sourceRoot = body.sourceRootOverride || process.env.LEADS_SOURCE_DIR
+  const databaseUrl = process.env.DATABASE_URL
+
+  if (!sourceRoot) {
+    return NextResponse.json(
+      { ok: false, error: "LEADS_SOURCE_DIR_not_configured" },
+      { status: 500 },
+    )
+  }
+  
+  console.log("[CRiar-Lista] Using sourceRoot:", sourceRoot)
+
+  if (!databaseUrl) {
+    return NextResponse.json(
+      { ok: false, error: "DATABASE_URL_not_configured" },
+      { status: 500 },
+    )
   }
   const dryRun = body.dryRun === true
   const batchSize = Number.isFinite(body.batchSize) && (body.batchSize as number) > 0 ? Math.min(body.batchSize as number, 5000) : 1000
