@@ -39,6 +39,7 @@ type EtlStats = {
   atualizados: number
   ignoradosSemTelefone: number
   ignoradosSemCidade: number
+  ignoradosDuplicados: number
   linhasInvalidas: number
   exemplosErrosValidacao: Array<{ arquivo: string; motivo: string; debug?: Record<string, string> }>
   erros: number
@@ -298,6 +299,7 @@ const HEADER_EQUIV: Record<string, StandardFieldKey> = {
   fonecontato: "phone",
   cel: "phone",
   SOCIO1Celular1: "phone",
+  Socio1Celular1: "phone",
   // city/state
   cidade: "city",
   CIDADE: "city",
@@ -801,8 +803,11 @@ async function parseCsv(filePath: string, maxRowsPerFile: number | null): Promis
   return rows
 }
 
-async function upsertBatchPrisma(leads: NormalizedLead[]): Promise<{ inserted: number; updated: number }> {
-  if (leads.length === 0) return { inserted: 0, updated: 0 }
+async function upsertBatchPrisma(
+  leads: NormalizedLead[],
+  skipExisting = false
+): Promise<{ inserted: number; updated: number; skipped: number }> {
+  if (leads.length === 0) return { inserted: 0, updated: 0, skipped: 0 }
 
   const inputs: DbLeadInput[] = leads.map((l) => ({
     phone: l.telefone,
@@ -826,7 +831,11 @@ async function upsertBatchPrisma(leads: NormalizedLead[]): Promise<{ inserted: n
   )
 
   const toCreate = inputs.filter((i) => !existingSet.has(i.phone)).sort((a, b) => a.phone.localeCompare(b.phone))
-  const toUpdate = inputs.filter((i) => existingSet.has(i.phone)).sort((a, b) => a.phone.localeCompare(b.phone))
+  
+  // Se skipExisting=true, não atualiza registros existentes (apenas ignora)
+  // Se skipExisting=false, atualiza registros existentes (comportamento padrão)
+  const toUpdate = skipExisting ? [] : inputs.filter((i) => existingSet.has(i.phone)).sort((a, b) => a.phone.localeCompare(b.phone))
+  const skippedCount = skipExisting ? existingSet.size : 0
 
   if (toCreate.length > 0) {
     await prisma.lead.createMany({
@@ -868,7 +877,7 @@ async function upsertBatchPrisma(leads: NormalizedLead[]): Promise<{ inserted: n
     }
   }
 
-  return { inserted: toCreate.length, updated: toUpdate.length }
+  return { inserted: toCreate.length, updated: toUpdate.length, skipped: skippedCount }
 }
 
 export async function POST(req: Request) {
@@ -891,6 +900,7 @@ export async function POST(req: Request) {
     forceCity?: string
     forceState?: string
     sourceRootOverride?: string
+    skipExisting?: boolean
   }
 
   const sourceRoot = body.sourceRootOverride || process.env.LEADS_SOURCE_DIR
@@ -912,6 +922,7 @@ export async function POST(req: Request) {
     )
   }
   const dryRun = body.dryRun === true
+  const skipExisting = body.skipExisting === true
   const batchSize = Number.isFinite(body.batchSize) && (body.batchSize as number) > 0 ? Math.min(body.batchSize as number, 5000) : 1000
   const onlyNichos = Array.isArray(body.onlyNichos)
     ? (body.onlyNichos as unknown[])
@@ -952,6 +963,7 @@ export async function POST(req: Request) {
     atualizados: 0,
     ignoradosSemTelefone: 0,
     ignoradosSemCidade: 0,
+    ignoradosDuplicados: 0,
     linhasInvalidas: 0,
     exemplosErrosValidacao: [],
     erros: 0,
@@ -1073,9 +1085,10 @@ export async function POST(req: Request) {
 
           if (batch.length >= batchSize) {
             if (!dryRun) {
-              const { inserted, updated } = await upsertBatchPrisma(batch)
+              const { inserted, updated, skipped } = await upsertBatchPrisma(batch, skipExisting)
               stats.inseridos += inserted
               stats.atualizados += updated
+              stats.ignoradosDuplicados += skipped
             }
             batch = []
           }
@@ -1083,9 +1096,10 @@ export async function POST(req: Request) {
 
         if (batch.length > 0) {
           if (!dryRun) {
-            const { inserted, updated } = await upsertBatchPrisma(batch)
+            const { inserted, updated, skipped } = await upsertBatchPrisma(batch, skipExisting)
             stats.inseridos += inserted
             stats.atualizados += updated
+            stats.ignoradosDuplicados += skipped
           }
         }
 

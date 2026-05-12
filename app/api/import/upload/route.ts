@@ -201,6 +201,7 @@ export async function POST(req: Request) {
       onlyFiles: [storedFileName],
       maxFiles: 1,
       maxTotalFiles: 1,
+      skipExisting: true, // Importação via interface web ignora duplicados (não atualiza existentes)
       // Se usou temp dir, passa o caminho real para o processador
       ...(usedTempDir && { sourceRootOverride: path.dirname(uploadDir) }),
     }

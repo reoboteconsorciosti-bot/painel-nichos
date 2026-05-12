@@ -30,6 +30,11 @@ export default function Page() {
   const [importError, setImportError] = useState<string | null>(null)
   const [importResult, setImportResult] = useState<Record<string, unknown> | null>(null)
 
+  // Reset de listas
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
+  const [resetSuccess, setResetSuccess] = useState<string | null>(null)
+
   // Controle de login (se currentUser for null, exibe a tela de login)
   const [currentUser, setCurrentUser] = useState<SupervisorConfig | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -235,6 +240,45 @@ export default function Page() {
       setWhatsNotifyError("Nao foi possivel salvar o numero")
     } finally {
       setWhatsNotifyLoading(false)
+    }
+  }
+
+  const handleResetAllListas = async () => {
+    if (!currentUser || currentUser.role !== "admin") return
+    if (!confirm("Tem certeza que deseja resetar TODAS as listas?\n\nIsso irá:\n- Deletar todas as listas criadas\n- Liberar todos os leads para extração novamente\n\nEsta ação não pode ser desfeita!")) return
+
+    setResetLoading(true)
+    setResetError(null)
+    setResetSuccess(null)
+
+    try {
+      const res = await fetch("/api/admin/reset-listas", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          resetToken: "4e9b1f7c8a2d5e6f0Pc3HLb9aO31dI72eU4fY6c2YD8a5TG3e7Tf1c9b2a6d4e8fA3c7b1SD5e9",
+          confirm: "deletar tudo"
+        }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "failed")
+      }
+      setResetSuccess(`Reset concluído! ${data.deleted?.listas || 0} listas deletadas.`)
+      // Recarrega as estatísticas
+      if (activeTab === "team") {
+        fetch("/api/consultants/stats")
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok && d.stats) setTeamStats(d.stats)
+          })
+          .catch(() => {})
+      }
+    } catch {
+      setResetError("Não foi possível resetar as listas")
+    } finally {
+      setResetLoading(false)
     }
   }
 
@@ -550,6 +594,27 @@ export default function Page() {
                     >
                       Gerenciar Equipe ({supervisors.length})
                     </button>
+
+                    <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-left">
+                      <p className="text-sm font-semibold text-destructive">⚠️ Reset de Listas</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Deleta todas as listas criadas e libera todos os leads para extração novamente. Os leads NÃO serão removidos.
+                      </p>
+
+                      <button
+                        onClick={handleResetAllListas}
+                        disabled={resetLoading}
+                        className="mt-3 h-10 w-full rounded-md bg-destructive px-4 text-sm font-semibold text-destructive-foreground hover:brightness-110 disabled:opacity-60"
+                      >
+                        {resetLoading ? "Resetando..." : "Resetar Todas as Listas"}
+                      </button>
+                      {resetSuccess && (
+                        <p className="text-xs text-emerald-600 mt-2">{resetSuccess}</p>
+                      )}
+                      {resetError && (
+                        <p className="text-xs text-destructive mt-2">{resetError}</p>
+                      )}
+                    </div>
 
                     <div className="rounded-xl border border-border bg-secondary/20 p-4 text-left">
                       <p className="text-sm font-semibold text-foreground">WhatsApp - Numero de notificacao</p>

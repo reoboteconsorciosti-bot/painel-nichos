@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Search, SlidersHorizontal, LayoutGrid, CalendarDays } from "lucide-react"
+import { Search, SlidersHorizontal, LayoutGrid, CalendarDays, Check, FileText } from "lucide-react"
 import { NICHES } from "@/lib/data"
 import { Input } from "@/components/ui/input"
 import { NicheCard } from "@/components/niche-card"
@@ -9,6 +9,7 @@ import { NicheModal } from "@/components/niche-modal"
 import { SuccessDialog } from "@/components/success-dialog"
 import { ScheduleTimeline } from "@/components/schedule-timeline"
 import { jsPDF } from "jspdf"
+import * as XLSX from "xlsx"
 
 export interface ScheduleEntry {
   id: string
@@ -58,6 +59,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
   const [activeNicheId, setActiveNicheId] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [showSuccess, setShowSuccess] = useState(false)
+  const [showFormatDialog, setShowFormatDialog] = useState(false)
   const [schedules, setSchedules] = useState<ScheduleEntry[]>([])
   const [lastCreated, setLastCreated] = useState<ScheduleEntry | null>(null)
   const [generatedLeadsByEntryId, setGeneratedLeadsByEntryId] = useState<Record<string, GeneratedLead[]>>({})
@@ -164,7 +166,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     }))
     setSchedules((prev) => [...prev, entry])
     setLastCreated(entry)
-    setShowSuccess(true)
+    setShowFormatDialog(true) // Pergunta formato (PDF ou Excel)
   }
 
   const handleCheckAvailability = async (
@@ -257,6 +259,65 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
   const handleNewSchedule = () => {
     setShowSuccess(false)
     setActiveNicheId(null)
+  }
+
+  const handleCloseFormatDialog = () => {
+    setShowFormatDialog(false)
+  }
+
+  const handleChoosePdf = () => {
+    setShowFormatDialog(false)
+    setShowSuccess(true)
+  }
+
+  const handleChooseExcel = () => {
+    setShowFormatDialog(false)
+    if (lastCreated) {
+      handleCreateExcel(lastCreated)
+    }
+  }
+
+  const handleCreateExcel = (entry: ScheduleEntry) => {
+    const leads = generatedLeadsByEntryId[entry.id] ?? []
+    if (leads.length === 0) {
+      throw new Error("no_leads_returned")
+    }
+
+    const ufTitle = (entry.state ?? "").trim().toUpperCase().slice(0, 2)
+    const cidadeTitle = (entry.city ?? "").trim()
+    const title = `${entry.niches.join(" + ").toUpperCase()} - ${cidadeTitle}${cidadeTitle ? " - " : ""}${ufTitle} - ${entry.consultantName.toUpperCase()}`
+
+    // Preparar dados para Excel
+    const data = leads.map((lead) => ({
+      NOME: lead.name || "",
+      TELEFONE: lead.phone || "",
+      CIDADE: lead.city || "",
+      UF: lead.state || "",
+      "RAZAO SOCIAL": lead.company || "",
+      WHATSAPP: buildWhatsAppLink(lead.phone) || "",
+    }))
+
+    // Criar workbook e worksheet
+    const wb = XLSX.utils.book_new()
+    const ws = XLSX.utils.json_to_sheet(data)
+
+    // Definir larguras das colunas
+    const colWidths = [
+      { wch: 30 }, // NOME
+      { wch: 15 }, // TELEFONE
+      { wch: 25 }, // CIDADE
+      { wch: 5 },  // UF
+      { wch: 35 }, // RAZAO SOCIAL
+      { wch: 20 }, // WHATSAPP
+    ]
+    ws["!cols"] = colWidths
+
+    // Adicionar worksheet ao workbook
+    XLSX.utils.book_append_sheet(wb, ws, "Leads")
+
+    // Gerar arquivo
+    const fileName = `${title.replace(/[^a-zA-Z0-9\-_]/g, "_")}.xlsx`
+    XLSX.writeFile(wb, fileName)
   }
 
   const handleCreatePdf = (entry: ScheduleEntry) => {
@@ -508,6 +569,55 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
           onNewSchedule={handleNewSchedule}
           onCreatePdf={handleCreatePdf}
         />
+      )}
+
+      {/* Diálogo para escolher formato (PDF ou Excel) */}
+      {lastCreated && (
+        <div className={`fixed inset-0 z-50 flex items-center justify-center ${showFormatDialog ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"} transition-opacity`}>
+          <div className="absolute inset-0 bg-black/60" onClick={handleCloseFormatDialog} />
+          <div className="relative z-10 w-full max-w-md rounded-2xl border border-border bg-background p-6 shadow-2xl">
+            <div className="mb-6 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/20">
+                <Check className="size-8 text-primary" />
+              </div>
+              <h2 className="text-xl font-semibold text-foreground">Lista criada!</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Escolha o formato para exportar seus leads
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <button
+                onClick={handleChoosePdf}
+                className="flex flex-col items-center gap-3 rounded-xl border-2 border-border bg-secondary/30 p-6 transition-all hover:border-primary/50 hover:bg-primary/10"
+              >
+                <FileText className="size-10 text-primary" />
+                <div className="text-center">
+                  <p className="font-semibold text-foreground">PDF</p>
+                  <p className="text-xs text-muted-foreground">Visualização em documento</p>
+                </div>
+              </button>
+
+              <button
+                onClick={handleChooseExcel}
+                className="flex flex-col items-center gap-3 rounded-xl border-2 border-border bg-secondary/30 p-6 transition-all hover:border-emerald-500/50 hover:bg-emerald-500/10"
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded bg-emerald-500 text-white font-bold text-sm">XLS</div>
+                <div className="text-center">
+                  <p className="font-semibold text-foreground">Excel</p>
+                  <p className="text-xs text-muted-foreground">Planilha editável</p>
+                </div>
+              </button>
+            </div>
+
+            <button
+              onClick={handleCloseFormatDialog}
+              className="w-full rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )

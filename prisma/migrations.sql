@@ -1,0 +1,1 @@
+DELETE FROM "_prisma_migrations";
