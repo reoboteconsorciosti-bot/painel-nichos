@@ -309,8 +309,35 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     setShowConfirmDialog(true)
   }
 
-  const handleCreateExcel = (entry: ScheduleEntry) => {
-    const leads = generatedLeadsByEntryId[entry.id] ?? []
+  const handleExportFromTimeline = async (entry: ScheduleEntry, format: "pdf" | "excel") => {
+    let leads = generatedLeadsByEntryId[entry.id]
+
+    if (!leads || leads.length === 0) {
+      // Buscar da API se não estiver em memória
+      try {
+        const res = await fetch(`/api/listas/${entry.id}/leads`)
+        const data = await res.json()
+        if (data.ok && data.leads) {
+          leads = data.leads
+          setGeneratedLeadsByEntryId(prev => ({ ...prev, [entry.id]: data.leads }))
+        } else {
+          throw new Error("Falha ao buscar leads")
+        }
+      } catch (error) {
+        console.error("Erro ao buscar leads:", error)
+        return
+      }
+    }
+
+    if (format === "pdf") {
+      handleCreatePdf(entry, leads)
+    } else {
+      handleCreateExcel(entry, leads)
+    }
+  }
+
+  const handleCreateExcel = (entry: ScheduleEntry, leadsOverride?: GeneratedLead[]) => {
+    const leads = leadsOverride || generatedLeadsByEntryId[entry.id] || []
     if (leads.length === 0) {
       throw new Error("no_leads_returned")
     }
@@ -352,8 +379,8 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     XLSX.writeFile(wb, fileName)
   }
 
-  const handleCreatePdf = (entry: ScheduleEntry) => {
-    const leads = generatedLeadsByEntryId[entry.id] ?? []
+  const handleCreatePdf = (entry: ScheduleEntry, leadsOverride?: GeneratedLead[]) => {
+    const leads = leadsOverride || generatedLeadsByEntryId[entry.id] || []
     if (leads.length === 0) {
       throw new Error("no_leads_returned")
     }
@@ -529,7 +556,11 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
 
       {/* Timeline de agendamentos */}
       {schedules.length > 0 && (
-        <ScheduleTimeline schedules={schedules} onDelete={handleDeleteSchedule} />
+        <ScheduleTimeline 
+          schedules={schedules} 
+          onDelete={handleDeleteSchedule} 
+          onExport={handleExportFromTimeline}
+        />
       )}
 
       {/* Escolha o Nicho */}

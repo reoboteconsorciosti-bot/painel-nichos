@@ -10,15 +10,17 @@ import {
   Trash2,
   ChevronRight,
   Clock,
+  FileText,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface ScheduleTimelineProps {
   schedules: ScheduleEntry[]
   onDelete: (id: string) => void
+  onExport: (entry: ScheduleEntry, format: "pdf" | "excel") => void
 }
 
-export function ScheduleTimeline({ schedules, onDelete }: ScheduleTimelineProps) {
+export function ScheduleTimeline({ schedules, onDelete, onExport }: ScheduleTimelineProps) {
   const sorted = [...schedules].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 
   function formatDatePtBr(dateStr: string) {
@@ -142,14 +144,37 @@ export function ScheduleTimeline({ schedules, onDelete }: ScheduleTimelineProps)
                 </div>
               </div>
 
-              {/* Delete */}
-              <button
-                onClick={() => onDelete(entry.id)}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                aria-label="Excluir agendamento"
-              >
-                <Trash2 className="size-4" />
-              </button>
+              {/* Actions */}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 rounded-lg border border-border bg-secondary/20 p-1 opacity-0 transition-all group-hover:opacity-100">
+                  <button
+                    onClick={() => onExport(entry, "pdf")}
+                    className="flex h-8 items-center gap-2 rounded-md px-3 text-xs font-medium text-primary hover:bg-primary/10 transition-colors"
+                    title="Baixar PDF"
+                  >
+                    <FileText className="size-3.5" />
+                    <span>PDF</span>
+                  </button>
+                  <div className="h-4 w-px bg-border" />
+                  <button
+                    onClick={() => onExport(entry, "excel")}
+                    className="flex h-8 items-center gap-2 rounded-md px-3 text-xs font-medium text-emerald-600 hover:bg-emerald-50 transition-colors"
+                    title="Baixar Excel"
+                  >
+                    <div className="flex h-4 w-4 items-center justify-center rounded-sm bg-emerald-500 text-[10px] font-bold text-white">X</div>
+                    <span>Excel</span>
+                  </button>
+                </div>
+
+                {/* Delete */}
+                <button
+                  onClick={() => onDelete(entry.id)}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                  aria-label="Excluir agendamento"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
             </div>
           )
         })}
