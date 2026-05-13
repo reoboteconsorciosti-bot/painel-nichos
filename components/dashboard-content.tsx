@@ -60,6 +60,9 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
   const [search, setSearch] = useState("")
   const [showSuccess, setShowSuccess] = useState(false)
   const [showFormatDialog, setShowFormatDialog] = useState(false)
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false)
+  const [generatePdf, setGeneratePdf] = useState(false)
+  const [generateExcel, setGenerateExcel] = useState(false)
   const [schedules, setSchedules] = useState<ScheduleEntry[]>([])
   const [lastCreated, setLastCreated] = useState<ScheduleEntry | null>(null)
   const [generatedLeadsByEntryId, setGeneratedLeadsByEntryId] = useState<Record<string, GeneratedLead[]>>({})
@@ -265,16 +268,45 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     setShowFormatDialog(false)
   }
 
+  const handleCloseConfirmDialog = () => {
+    setShowConfirmDialog(false)
+    setGeneratePdf(false)
+    setGenerateExcel(false)
+  }
+
+  const handleConfirmGenerate = () => {
+    setShowConfirmDialog(false)
+    if (lastCreated) {
+      if (generatePdf) {
+        setShowSuccess(true)
+      }
+      if (generateExcel) {
+        handleCreateExcel(lastCreated)
+      }
+    }
+    setGeneratePdf(false)
+    setGenerateExcel(false)
+  }
+
   const handleChoosePdf = () => {
+    setGeneratePdf(true)
+    setGenerateExcel(false)
     setShowFormatDialog(false)
-    setShowSuccess(true)
+    setShowConfirmDialog(true)
   }
 
   const handleChooseExcel = () => {
+    setGeneratePdf(false)
+    setGenerateExcel(true)
     setShowFormatDialog(false)
-    if (lastCreated) {
-      handleCreateExcel(lastCreated)
-    }
+    setShowConfirmDialog(true)
+  }
+
+  const handleChooseBoth = () => {
+    setGeneratePdf(true)
+    setGenerateExcel(true)
+    setShowFormatDialog(false)
+    setShowConfirmDialog(true)
   }
 
   const handleCreateExcel = (entry: ScheduleEntry) => {
@@ -586,26 +618,36 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-3 gap-3 mb-4">
               <button
                 onClick={handleChoosePdf}
-                className="flex flex-col items-center gap-3 rounded-xl border-2 border-border bg-secondary/30 p-6 transition-all hover:border-primary/50 hover:bg-primary/10"
+                className="flex flex-col items-center gap-2 rounded-xl border-2 border-border bg-secondary/30 p-4 transition-all hover:border-primary/50 hover:bg-primary/10"
               >
-                <FileText className="size-10 text-primary" />
+                <FileText className="size-8 text-primary" />
                 <div className="text-center">
-                  <p className="font-semibold text-foreground">PDF</p>
-                  <p className="text-xs text-muted-foreground">Visualização em documento</p>
+                  <p className="font-semibold text-foreground text-sm">PDF</p>
                 </div>
               </button>
 
               <button
                 onClick={handleChooseExcel}
-                className="flex flex-col items-center gap-3 rounded-xl border-2 border-border bg-secondary/30 p-6 transition-all hover:border-emerald-500/50 hover:bg-emerald-500/10"
+                className="flex flex-col items-center gap-2 rounded-xl border-2 border-border bg-secondary/30 p-4 transition-all hover:border-emerald-500/50 hover:bg-emerald-500/10"
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded bg-emerald-500 text-white font-bold text-sm">XLS</div>
+                <div className="flex h-8 w-8 items-center justify-center rounded bg-emerald-500 text-white font-bold text-xs">XLS</div>
                 <div className="text-center">
-                  <p className="font-semibold text-foreground">Excel</p>
-                  <p className="text-xs text-muted-foreground">Planilha editável</p>
+                  <p className="font-semibold text-foreground text-sm">Excel</p>
+                </div>
+              </button>
+
+              <button
+                onClick={handleChooseBoth}
+                className="flex flex-col items-center gap-2 rounded-xl border-2 border-border bg-secondary/30 p-4 transition-all hover:border-purple-500/50 hover:bg-purple-500/10"
+              >
+                <div className="flex h-8 w-8 items-center justify-center rounded bg-gradient-to-br from-primary to-emerald-500 text-white font-bold text-xs">
+                  <FileText className="size-4" />
+                </div>
+                <div className="text-center">
+                  <p className="font-semibold text-foreground text-sm">Ambos</p>
                 </div>
               </button>
             </div>
@@ -616,6 +658,66 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
             >
               Cancelar
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Diálogo de confirmação para gerar arquivo */}
+      {lastCreated && (
+        <div className={`fixed inset-0 z-50 flex items-center justify-center ${showConfirmDialog ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"} transition-opacity`}>
+          <div className="absolute inset-0 bg-black/60" onClick={handleCloseConfirmDialog} />
+          <div className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-background p-6 shadow-2xl">
+            <div className="mb-6 text-center">
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/20">
+                <Check className="size-7 text-primary" />
+              </div>
+              <h2 className="text-lg font-semibold text-foreground">
+                Gerar arquivos
+              </h2>
+              <p className="text-sm text-muted-foreground mt-2">
+                Selecione quais formatos deseja gerar com {lastCreated.leadCount} leads:
+              </p>
+            </div>
+
+            <div className="space-y-3 mb-6">
+              <label className="flex items-center gap-3 p-3 rounded-lg border border-border bg-secondary/20 cursor-pointer hover:bg-secondary/30 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={generatePdf}
+                  onChange={(e) => setGeneratePdf(e.target.checked)}
+                  className="w-5 h-5 rounded border-border text-primary focus:ring-primary"
+                />
+                <FileText className="size-5 text-primary" />
+                <span className="text-sm font-medium text-foreground">PDF</span>
+              </label>
+
+              <label className="flex items-center gap-3 p-3 rounded-lg border border-border bg-secondary/20 cursor-pointer hover:bg-secondary/30 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={generateExcel}
+                  onChange={(e) => setGenerateExcel(e.target.checked)}
+                  className="w-5 h-5 rounded border-border text-emerald-500 focus:ring-emerald-500"
+                />
+                <div className="flex h-5 w-5 items-center justify-center rounded bg-emerald-500 text-white font-bold text-xs">XLS</div>
+                <span className="text-sm font-medium text-foreground">Excel</span>
+              </label>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleCloseConfirmDialog}
+                className="flex-1 rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmGenerate}
+                disabled={!generatePdf && !generateExcel}
+                className="flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold text-white bg-primary transition-all hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Gerar
+              </button>
+            </div>
           </div>
         </div>
       )}
