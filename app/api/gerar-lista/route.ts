@@ -11,6 +11,7 @@ type CreateListaBody = {
   cidade?: unknown
   nicho?: unknown
   consultantName?: unknown
+  enviarParaCrm?: unknown
 }
 
 function buildNichoWhere(nicho: string) {
@@ -112,6 +113,71 @@ async function sendWhatsAppMessage(params: { to: string; message: string }) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// CRM External Integration
+// ---------------------------------------------------------------------------
+
+type CrmContact = {
+  name: string
+  phone?: string
+  whatsapp?: string
+  city?: string
+  state?: string
+  company?: string
+  source?: string
+}
+
+async function pushLeadsToCRM(
+  leads: Array<{ name: string | null; phone: string | null; city: string | null; state: string | null; company: string | null; fantasy: string | null }>,
+  nicho: string,
+): Promise<void> {
+  const crmUrl = (process.env.CRM_API_URL ?? "").trim().replace(/\/+$/, "")
+  const crmKey = (process.env.CRM_API_KEY ?? "").trim()
+
+  if (!crmUrl || !crmKey) {
+    console.warn("[CRM] CRM_API_URL ou CRM_API_KEY não configurados — pulando envio.")
+    return
+  }
+
+  const contacts: CrmContact[] = leads
+    .filter((l) => l.name) // nome é obrigatório pelo CRM
+    .map((l) => ({
+      name: l.name ?? "",
+      ...(l.phone ? { phone: l.phone, whatsapp: l.phone } : {}),
+      ...(l.city ? { city: l.city } : {}),
+      ...(l.state ? { state: l.state } : {}),
+      ...(l.company || l.fantasy ? { company: l.company || l.fantasy || undefined } : {}),
+      source: `Painel Nichos - ${nicho}`,
+    }))
+
+  // Respeita o limite de 500 por chamada do CRM
+  const CHUNK_SIZE = 500
+  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
+    const chunk = contacts.slice(i, i + CHUNK_SIZE)
+    try {
+      const res = await fetch(`${crmUrl}/api/v1/contacts/bulk`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${crmKey}`,
+        },
+        body: JSON.stringify({ contacts: chunk }),
+      })
+
+      const data = (await res.json().catch(() => null)) as unknown
+
+      if (!res.ok) {
+        console.error(`[CRM] Erro ao enviar lote ${i / CHUNK_SIZE + 1}:`, res.status, data)
+      } else {
+        const summary = (data as { data?: { summary?: unknown } })?.data?.summary
+        console.log(`[CRM] Lote ${i / CHUNK_SIZE + 1} enviado com sucesso:`, summary)
+      }
+    } catch (err) {
+      console.error(`[CRM] Falha de rede no lote ${i / CHUNK_SIZE + 1}:`, err)
+    }
+  }
+}
+
 async function checkMonthlyLimit(tx: PrismaType.TransactionClient, consultorId: number, requestedQuantity: number) {
   const now = new Date()
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -148,6 +214,7 @@ export async function POST(req: Request) {
   const cidadeRaw = String(body.cidade ?? "").trim()
   const nichoRaw = String(body.nicho ?? "").trim()
   const consultantNameRaw = String(body.consultantName ?? "").trim()
+  const enviarParaCrm = body.enviarParaCrm === true
 
   const quantidade = quantidadeRaw
   const estado = estadoRaw.toUpperCase().slice(0, 2)
@@ -240,6 +307,13 @@ export async function POST(req: Request) {
       await sendWhatsAppMessage({ to: notifyNumber, message: msg })
     } catch {
       // não falhar a geração da lista se o WhatsApp falhar
+    }
+
+    // Disparar envio ao CRM em fire-and-forget apenas se o toggle estiver ativado
+    if (enviarParaCrm) {
+      pushLeadsToCRM(result.leads, nicho).catch((err) =>
+        console.error("[CRM] Erro inesperado no push:", err)
+      )
     }
 
     return NextResponse.json({ ok: true, ...result })

@@ -101,6 +101,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     city: string,
     leadCount: number,
     consultantName: string,
+    sendToCrm: boolean,
   ): Promise<void> => {
     const consultorId = consultants.indexOf(consultantName) + 1
     const quantidade = Math.max(1, leadCount)
@@ -121,6 +122,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
         nicho,
         quantidade,
         consultantName,
+        enviarParaCrm: sendToCrm,
       }),
     })
 

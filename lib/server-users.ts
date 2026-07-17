@@ -1,14 +1,7 @@
 import { type SupervisorConfig } from "@/lib/data"
 
-const fromEnv = (name: string): string => {
-  const direct = process.env[name]
-  if (direct && direct.trim()) return direct.trim()
-
-  const publicVariant = process.env[`NEXT_PUBLIC_${name}`]
-  if (publicVariant && publicVariant.trim()) return publicVariant.trim()
-
-  return ""
-}
+// APENAS lê variáveis server-side. Nunca usar NEXT_PUBLIC_ aqui.
+const fromEnv = (name: string): string => process.env[name]?.trim() ?? ""
 
 export const getInitialUsers = (): SupervisorConfig[] => {
   return [

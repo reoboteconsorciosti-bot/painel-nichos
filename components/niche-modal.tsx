@@ -5,7 +5,7 @@ import { NICHES } from "@/lib/data"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { LocationSelector } from "@/components/location-selector"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Check, ArrowRight, Plus, Sparkles } from "lucide-react"
+import { Check, ArrowRight, Plus, Zap } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -22,7 +22,7 @@ interface NicheModalProps {
     isOpen: boolean
     onClose: () => void
     activeNicheId: string | null
-    onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantName: string) => Promise<void>
+    onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantName: string, sendToCrm: boolean) => Promise<void>
     onCheckAvailability: (nicheIds: string[], state: string, city: string) => Promise<{ total: number; available: number; used: number }>
     onResetAvailability: (nicheIds: string[], state: string, city: string, resetToken: string) => Promise<{ total: number; available: number; used: number; deletedLinks: number }>
     consultants: string[]
@@ -46,6 +46,7 @@ export function NicheModal({
     const [submitError, setSubmitError] = useState<string | null>(null)
     const [noLeadsModalOpen, setNoLeadsModalOpen] = useState(false)
     const [leadsInsufficientModalOpen, setLeadsInsufficientModalOpen] = useState(false)
+    const [sendToCrm, setSendToCrm] = useState(false)
 
     const [availability, setAvailability] = useState<{ total: number; available: number; used: number } | null>(null)
     const [availabilityLoading, setAvailabilityLoading] = useState(false)
@@ -61,6 +62,7 @@ export function NicheModal({
         setAvailability(null)
         setAvailabilityError(null)
         setResetError(null)
+        setSendToCrm(false)
     }
 
     const validateForm = () => {
@@ -104,7 +106,7 @@ export function NicheModal({
                 }
             }
 
-            await onGenerate(selectedNiches, selectedState, selectedCity, leadCount, consultantName)
+            await onGenerate(selectedNiches, selectedState, selectedCity, leadCount, consultantName, sendToCrm)
             onClose()
         } catch (err) {
             const raw = err instanceof Error ? err.message : "failed_to_create_list"
@@ -335,6 +337,37 @@ export function NicheModal({
 
 
                         </div>
+
+                        {/* CRM Toggle */}
+                        <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/20 px-4 py-3">
+                            <div className="flex flex-col gap-0.5">
+                                <div className="flex items-center gap-2">
+                                    <Zap className="size-4 text-amber-400" />
+                                    <span className="text-sm font-medium text-foreground">Enviar para o CRM</span>
+                                </div>
+                                <span className="text-xs text-muted-foreground pl-6">
+                                    {sendToCrm ? "Os leads serão enviados ao CRM após geração" : "Apenas gera a lista, sem envio externo"}
+                                </span>
+                            </div>
+                            <button
+                                type="button"
+                                role="switch"
+                                aria-checked={sendToCrm}
+                                onClick={() => setSendToCrm((v) => !v)}
+                                className={cn(
+                                    "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none",
+                                    sendToCrm ? "bg-amber-400" : "bg-secondary"
+                                )}
+                            >
+                                <span
+                                    className={cn(
+                                        "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-200",
+                                        sendToCrm ? "translate-x-5" : "translate-x-0"
+                                    )}
+                                />
+                            </button>
+                        </div>
+
                         {/* Generate Button */}
                         <button
                             onClick={handleGenerate}
@@ -342,16 +375,18 @@ export function NicheModal({
                             className={cn(
                                 "mt-2 flex w-full items-center justify-center gap-2 rounded-lg px-6 py-3 text-sm font-semibold transition-all duration-200",
                                 isReady && !isSubmitting
-                                    ? "bg-primary text-primary-foreground hover:brightness-110 active:scale-[0.98]"
+                                    ? sendToCrm
+                                        ? "bg-amber-400 text-black hover:brightness-110 active:scale-[0.98]"
+                                        : "bg-primary text-primary-foreground hover:brightness-110 active:scale-[0.98]"
                                     : "cursor-not-allowed bg-secondary text-muted-foreground opacity-60"
                             )}
                         >
                             {isSubmitting ? (
-                                "Criando..."
+                                sendToCrm ? "Criando e enviando ao CRM..." : "Criando..."
                             ) : isReady ? (
                                 <>
-                                    <Plus className="size-4" />
-                                    Criar Lista
+                                    {sendToCrm ? <Zap className="size-4" /> : <Plus className="size-4" />}
+                                    {sendToCrm ? "Criar e Enviar ao CRM" : "Criar Lista"}
                                     <ArrowRight className="size-4" />
                                 </>
                             ) : (

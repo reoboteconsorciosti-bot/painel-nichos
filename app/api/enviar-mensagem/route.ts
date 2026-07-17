@@ -414,6 +414,32 @@ function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Formata um número para o formato JID do WhatsApp (Brasil)
+ * Remove o 9º dígito de DDDs > 27 para compatibilidade com JIDs antigos
+ */
+function formatToWhatsAppJid(number: string): string {
+  let cleaned = number.replace(/\D/g, "");
+
+  // Se não tem DDI, assume Brasil
+  if (cleaned.length <= 11) {
+    if (cleaned.length === 10 || cleaned.length === 11) {
+      cleaned = "55" + cleaned;
+    }
+  }
+
+  // Lógica do 9º dígito para o Brasil
+  // No WhatsApp, JIDs de DDDs acima de 27 geralmente não possuem o 9º dígito
+  if (cleaned.startsWith("55") && cleaned.length === 13) {
+    const ddd = parseInt(cleaned.substring(2, 4));
+    if (ddd > 27) {
+      cleaned = cleaned.substring(0, 4) + cleaned.substring(5);
+    }
+  }
+
+  return cleaned.includes("@") ? cleaned : `${cleaned}@c.us`;
+}
+
 async function processQueue(userId: string) {
   if (isSendingMessage.get(userId)) return;
 
@@ -431,11 +457,25 @@ async function processQueue(userId: string) {
     const { number, message, messageId, resolve, reject } = currentItem;
 
     try {
-      const chatId = `${number}@c.us`;
+      // Primeiro tenta obter o ID correto via WhatsApp (mais seguro)
+      let chatId: string;
+      try {
+        const numberId = await session.client.getNumberId(number);
+        if (numberId) {
+          chatId = numberId._serialized;
+        } else {
+          // Fallback para formatação manual se getNumberId falhar
+          chatId = formatToWhatsAppJid(number);
+        }
+      } catch (err) {
+        console.warn(`[${userId}] Falha ao obter numberId para ${number}, usando fallback.`);
+        chatId = formatToWhatsAppJid(number);
+      }
+
       const isRegistered = await session.client.isRegisteredUser(chatId);
       
       if (!isRegistered) {
-        console.error(`[${userId}] Número inválido ou não registrado no WhatsApp: ${number}`);
+        console.error(`[${userId}] Número inválido ou não registrado no WhatsApp: ${number} (JID: ${chatId})`);
         reject(new Error(`Número ${number} não possui WhatsApp.`));
         continue;
       }
