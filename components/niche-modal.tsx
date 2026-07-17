@@ -22,7 +22,7 @@ interface NicheModalProps {
     isOpen: boolean
     onClose: () => void
     activeNicheId: string | null
-    onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantName: string, sendToCrm: boolean) => Promise<void>
+    onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantName: string, sendToCrm: boolean, crmOwnerId: string | null) => Promise<void>
     onCheckAvailability: (nicheIds: string[], state: string, city: string) => Promise<{ total: number; available: number; used: number }>
     onResetAvailability: (nicheIds: string[], state: string, city: string, resetToken: string) => Promise<{ total: number; available: number; used: number; deletedLinks: number }>
     consultants: string[]
@@ -48,6 +48,19 @@ export function NicheModal({
     const [leadsInsufficientModalOpen, setLeadsInsufficientModalOpen] = useState(false)
     const [sendToCrm, setSendToCrm] = useState(false)
 
+    interface CrmMember {
+        id: string;
+        name: string;
+        role: string;
+        team?: { name: string };
+        photoUrl?: string | null;
+    }
+
+    const [crmMembers, setCrmMembers] = useState<CrmMember[]>([])
+    const [crmMembersLoading, setCrmMembersLoading] = useState(false)
+    const [crmMembersFetched, setCrmMembersFetched] = useState(false)
+    const [crmOwnerId, setCrmOwnerId] = useState<string>("none")
+
     const [availability, setAvailability] = useState<{ total: number; available: number; used: number } | null>(null)
     const [availabilityLoading, setAvailabilityLoading] = useState(false)
     const [availabilityError, setAvailabilityError] = useState<string | null>(null)
@@ -63,7 +76,28 @@ export function NicheModal({
         setAvailabilityError(null)
         setResetError(null)
         setSendToCrm(false)
+        setCrmOwnerId("none")
+        setCrmMembersFetched(false)
     }
+
+    // Fetch CRM members when sendToCrm is toggled on (fetch once)
+    useEffect(() => {
+        if (sendToCrm && !crmMembersFetched && !crmMembersLoading) {
+            setCrmMembersLoading(true)
+            fetch("/api/crm/members")
+                .then(r => r.json())
+                .then(d => {
+                    if (d.ok && d.members) {
+                        setCrmMembers(d.members)
+                    }
+                })
+                .catch(() => {})
+                .finally(() => {
+                    setCrmMembersLoading(false)
+                    setCrmMembersFetched(true)
+                })
+        }
+    }, [sendToCrm, crmMembersFetched, crmMembersLoading])
 
     const validateForm = () => {
         return selectedState !== "" && typeof leadCount === "number" && (leadCount as number) > 0 && consultantName.trim() !== ""
@@ -106,7 +140,15 @@ export function NicheModal({
                 }
             }
 
-            await onGenerate(selectedNiches, selectedState, selectedCity, leadCount, consultantName, sendToCrm)
+            await onGenerate(
+                selectedNiches,
+                selectedState,
+                selectedCity,
+                leadCount,
+                consultantName,
+                sendToCrm,
+                sendToCrm && crmOwnerId !== "none" ? crmOwnerId : null
+            )
             onClose()
         } catch (err) {
             const raw = err instanceof Error ? err.message : "failed_to_create_list"
@@ -367,6 +409,41 @@ export function NicheModal({
                                 />
                             </button>
                         </div>
+
+                        {/* CRM Selection Dropdown */}
+                        {sendToCrm && (
+                            <div className="flex flex-col gap-2 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3">
+                                <div className="flex items-center gap-2">
+                                    <Zap className="size-4 text-amber-500" />
+                                    <span className="text-sm font-medium text-foreground">
+                                        Responsável no CRM (Opcional)
+                                    </span>
+                                </div>
+                                <Select value={crmOwnerId} onValueChange={setCrmOwnerId}>
+                                    <SelectTrigger className="w-full h-10 bg-background border-border" disabled={crmMembersLoading}>
+                                        <SelectValue placeholder={crmMembersLoading ? "Carregando membros..." : "Nenhum responsável atribuído"} />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectGroup>
+                                            <SelectLabel>Membros do CRM</SelectLabel>
+                                            <SelectItem value="none" className="italic text-muted-foreground">Sem responsável</SelectItem>
+                                            {crmMembers.map((m) => (
+                                                <SelectItem key={m.id} value={m.id}>
+                                                    <div className="flex items-center gap-2">
+                                                        {m.photoUrl && <img src={m.photoUrl} alt="" className="size-5 rounded-full object-cover" />}
+                                                        <span>{m.name}</span>
+                                                        <span className="text-[10px] text-muted-foreground uppercase bg-secondary px-1.5 py-0.5 rounded-sm">{m.role}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectGroup>
+                                    </SelectContent>
+                                </Select>
+                                <span className="text-xs text-muted-foreground mt-1">
+                                    Selecione quem será o dono desses contatos no CRM. Se não selecionar, os leads cairão sem responsável.
+                                </span>
+                            </div>
+                        )}
 
                         {/* Generate Button */}
                         <button

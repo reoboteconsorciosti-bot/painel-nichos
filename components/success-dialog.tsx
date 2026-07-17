@@ -10,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { CheckCircle2, Copy, FileText, Plus, MapPin } from "lucide-react"
+import { CheckCircle2, Copy, FileText, Plus, MapPin, AlertTriangle } from "lucide-react"
 import { useState } from "react"
 import type { ScheduleEntry } from "@/components/dashboard-content"
 
@@ -98,6 +98,45 @@ export function SuccessDialog({
             </p>
           </div>
         </div>
+
+        {(entry.crmCreatedCount !== undefined || entry.crmIgnoredCount !== undefined || (entry.crmWarnings && entry.crmWarnings.length > 0)) && (
+          <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-4">
+            <div className="flex items-center gap-2 text-amber-600 mb-2 dark:text-amber-500">
+              <AlertTriangle className="size-4 shrink-0" />
+              <span className="text-sm font-semibold">Retorno do CRM</span>
+            </div>
+            
+            {/* Contagens de leads */}
+            {(entry.crmCreatedCount !== undefined || entry.crmIgnoredCount !== undefined) && (
+              <div className="mb-2 px-2">
+                <div className="flex flex-col gap-1 text-xs">
+                  {entry.crmCreatedCount !== undefined && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-emerald-600 font-medium">Leads criados:</span>
+                      <span className="text-foreground font-semibold">{entry.crmCreatedCount}</span>
+                    </div>
+                  )}
+                  {entry.crmIgnoredCount !== undefined && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-amber-600 font-medium">Leads ignorados:</span>
+                      <span className="text-foreground font-semibold">{entry.crmIgnoredCount}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Warnings */}
+            {entry.crmWarnings && entry.crmWarnings.length > 0 && (
+              <ul className="list-disc pl-5 text-xs text-amber-600/90 dark:text-amber-500/90 space-y-1 max-h-24 overflow-y-auto">
+                {entry.crmWarnings.map((warning, idx) => (
+                  <li key={idx}>{warning}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
 
         <DialogFooter className="flex flex-col gap-2 sm:flex-row">
           <button

@@ -12,6 +12,7 @@ type CreateListaBody = {
   nicho?: unknown
   consultantName?: unknown
   enviarParaCrm?: unknown
+  crmOwnerId?: unknown
 }
 
 function buildNichoWhere(nicho: string) {
@@ -125,29 +126,35 @@ type CrmContact = {
   state?: string
   company?: string
   source?: string
+  ownerId?: string
 }
 
 async function pushLeadsToCRM(
   leads: Array<{ name: string | null; phone: string | null; city: string | null; state: string | null; company: string | null; fantasy: string | null }>,
   nicho: string,
-): Promise<void> {
+  ownerId: string | null,
+): Promise<{ warnings: string[]; createdCount: number; ignoredCount: number }> {
   const crmUrl = (process.env.CRM_API_URL ?? "").trim().replace(/\/+$/, "")
   const crmKey = (process.env.CRM_API_KEY ?? "").trim()
+  const allWarnings: string[] = []
+  let createdCount = 0
+  let ignoredCount = 0
 
   if (!crmUrl || !crmKey) {
     console.warn("[CRM] CRM_API_URL ou CRM_API_KEY não configurados — pulando envio.")
-    return
+    return { warnings: allWarnings, createdCount, ignoredCount }
   }
 
   const contacts: CrmContact[] = leads
     .filter((l) => l.name) // nome é obrigatório pelo CRM
     .map((l) => ({
       name: l.name ?? "",
-      ...(l.phone ? { phone: l.phone, whatsapp: l.phone } : {}),
+      ...(l.phone ? { whatsapp: l.phone } : {}),
       ...(l.city ? { city: l.city } : {}),
       ...(l.state ? { state: l.state } : {}),
       ...(l.company || l.fantasy ? { company: l.company || l.fantasy || undefined } : {}),
       source: `Painel Nichos - ${nicho}`,
+      ...(ownerId ? { ownerId } : {}),
     }))
 
   // Respeita o limite de 500 por chamada do CRM
@@ -164,17 +171,46 @@ async function pushLeadsToCRM(
         body: JSON.stringify({ contacts: chunk }),
       })
 
-      const data = (await res.json().catch(() => null)) as unknown
+      const data = (await res.json().catch(() => null)) as any
 
       if (!res.ok) {
         console.error(`[CRM] Erro ao enviar lote ${i / CHUNK_SIZE + 1}:`, res.status, data)
+        // Se houver erro na requisição, todos os leads do chunk são considerados ignorados
+        ignoredCount += chunk.length
       } else {
-        const summary = (data as { data?: { summary?: unknown } })?.data?.summary
+        const summary = data?.data?.summary
         console.log(`[CRM] Lote ${i / CHUNK_SIZE + 1} enviado com sucesso:`, summary)
+        
+        // Coleta warnings dos resultados individuais e contabiliza
+        if (Array.isArray(data?.data?.results)) {
+          data.data.results.forEach((r: any) => {
+            if (r.status === 'created') {
+              createdCount++
+            } else if (r.status === 'ignored') {
+              ignoredCount++
+            }
+            if (Array.isArray(r.warnings)) {
+              allWarnings.push(...r.warnings)
+            }
+          })
+        } else {
+          // Se não houver results, usa o summary se disponível
+          if (summary?.created) createdCount += summary.created
+          if (summary?.ignored) ignoredCount += summary.ignored
+        }
       }
     } catch (err) {
       console.error(`[CRM] Falha de rede no lote ${i / CHUNK_SIZE + 1}:`, err)
+      // Se houver erro de rede, todos os leads do chunk são considerados ignorados
+      ignoredCount += chunk.length
     }
+  }
+
+  // Remove duplicates
+  return { 
+    warnings: Array.from(new Set(allWarnings)), 
+    createdCount, 
+    ignoredCount 
   }
 }
 
@@ -215,6 +251,7 @@ export async function POST(req: Request) {
   const nichoRaw = String(body.nicho ?? "").trim()
   const consultantNameRaw = String(body.consultantName ?? "").trim()
   const enviarParaCrm = body.enviarParaCrm === true
+  const crmOwnerIdRaw = body.crmOwnerId ? String(body.crmOwnerId).trim() : null
 
   const quantidade = quantidadeRaw
   const estado = estadoRaw.toUpperCase().slice(0, 2)
@@ -241,8 +278,8 @@ export async function POST(req: Request) {
         state: { equals: estado, mode: "insensitive" as const },
         ...(cidade
           ? {
-              city: { equals: cidade, mode: "insensitive" as const },
-            }
+            city: { equals: cidade, mode: "insensitive" as const },
+          }
           : {}),
       }
 
@@ -309,23 +346,31 @@ export async function POST(req: Request) {
       // não falhar a geração da lista se o WhatsApp falhar
     }
 
-    // Disparar envio ao CRM em fire-and-forget apenas se o toggle estiver ativado
+    // Disparar envio ao CRM
+    let crmWarnings: string[] = []
+    let crmCreatedCount: number = 0
+    let crmIgnoredCount: number = 0
     if (enviarParaCrm) {
-      pushLeadsToCRM(result.leads, nicho).catch((err) =>
+      try {
+        const crmResult = await pushLeadsToCRM(result.leads, nicho, crmOwnerIdRaw)
+        crmWarnings = crmResult.warnings
+        crmCreatedCount = crmResult.createdCount
+        crmIgnoredCount = crmResult.ignoredCount
+      } catch (err) {
         console.error("[CRM] Erro inesperado no push:", err)
-      )
+      }
     }
 
-    return NextResponse.json({ ok: true, ...result })
+    return NextResponse.json({ ok: true, ...result, crmWarnings, crmCreatedCount, crmIgnoredCount })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    
+
     // Tratamento de erros específicos
     if (msg.startsWith("limit_exceeded")) {
       const parts = msg.split("|")
       return NextResponse.json({ ok: false, error: parts[1] || "limite mensal excedido" }, { status: 400 })
     }
-    
+
     const status = msg.startsWith("no_leads_available") ? 404 : 500
     return NextResponse.json({ ok: false, error: msg || "failed_to_create_list" }, { status })
   }

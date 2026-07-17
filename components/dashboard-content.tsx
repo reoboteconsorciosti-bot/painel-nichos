@@ -19,6 +19,9 @@ export interface ScheduleEntry {
   leadCount: number
   consultantName: string
   createdAt: string
+  crmWarnings?: string[]
+  crmCreatedCount?: number
+  crmIgnoredCount?: number
 }
 
 type GeneratedLead = {
@@ -102,6 +105,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     leadCount: number,
     consultantName: string,
     sendToCrm: boolean,
+    crmOwnerId: string | null,
   ): Promise<void> => {
     const consultorId = consultants.indexOf(consultantName) + 1
     const quantidade = Math.max(1, leadCount)
@@ -123,6 +127,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
         quantidade,
         consultantName,
         enviarParaCrm: sendToCrm,
+        crmOwnerId,
       }),
     })
 
@@ -164,6 +169,9 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
       leadCount: leads.length,
       consultantName,
       createdAt: new Date().toISOString(),
+      crmWarnings: (data as { crmWarnings?: string[] }).crmWarnings,
+      crmCreatedCount: (data as { crmCreatedCount?: number }).crmCreatedCount,
+      crmIgnoredCount: (data as { crmIgnoredCount?: number }).crmIgnoredCount,
     }
     setGeneratedLeadsByEntryId((prev) => ({
       ...prev,
