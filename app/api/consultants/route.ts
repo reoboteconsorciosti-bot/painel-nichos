@@ -8,15 +8,6 @@ function toNonEmptyString(v: unknown): string | null {
   return s ? s : null
 }
 
-function getAllowedSupervisorIds(): Set<string> {
-  const ids: string[] = []
-  if (process.env.NEXT_PUBLIC_EMAILSUPERVISOR1 && process.env.NEXT_PUBLIC_NAMESUPERVISOR1) ids.push("supervisor-1")
-  if (process.env.NEXT_PUBLIC_EMAILSUPERVISOR2 && process.env.NEXT_PUBLIC_NAMESUPERVISOR2) ids.push("supervisor-2")
-  if (process.env.NEXT_PUBLIC_EMAILADMIN1 && process.env.NEXT_PUBLIC_NAMEADMIN1) ids.push("admin-1")
-  if (process.env.NEXT_PUBLIC_EMAILADMIN2 && process.env.NEXT_PUBLIC_NAMEADMIN2) ids.push("admin-2")
-  return new Set(ids)
-}
-
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const supervisorId = toNonEmptyString(searchParams.get("supervisorId"))
@@ -48,11 +39,6 @@ export async function POST(req: Request) {
 
   if (!name || !supervisorId) {
     return NextResponse.json({ ok: false, error: "invalid_payload" }, { status: 400 })
-  }
-
-  const allowed = getAllowedSupervisorIds()
-  if (!allowed.has(supervisorId)) {
-    return NextResponse.json({ ok: false, error: "invalid_supervisor" }, { status: 403 })
   }
 
   try {
