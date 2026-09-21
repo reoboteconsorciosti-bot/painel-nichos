@@ -8,6 +8,7 @@ import {
   Palette,
   Shirt,
   ShoppingCart,
+  Sparkles,
   Sofa,
   Scale,
   Stethoscope,
@@ -117,6 +118,13 @@ export const NICHES: Niche[] = [
     icon: Shirt,
     description: "Lojas de vestuario e moda",
     color: "from-red-500/20 to-red-500/5",
+  },
+  {
+    id: "estetica",
+    label: "Estética",
+    icon: Sparkles,
+    description: "Clinicas de estetica, salões de beleza e spas",
+    color: "from-purple-500/20 to-purple-500/5",
   },
   {
     id: "petshops",

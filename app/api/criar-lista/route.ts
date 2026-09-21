@@ -206,6 +206,8 @@ function mapFolderToNicheId(folderName: string): string {
   if (folderKey.includes("MEDIC")) return "medicos"
   if (folderKey.includes("LOJAS") && folderKey.includes("ROUP")) return "lojas-de-roupa"
 
+  if (folderKey.includes("ESTETIC")) return "estetica"
+
   // fallback: grava o nome da pasta
   return folderName
 }
