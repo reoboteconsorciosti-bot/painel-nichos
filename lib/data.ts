@@ -1,6 +1,7 @@
 import {
   Briefcase,
   Car,
+  GraduationCap,
   Hammer,
   HardHat,
   PawPrint,
@@ -125,6 +126,13 @@ export const NICHES: Niche[] = [
     icon: Sparkles,
     description: "Clinicas de estetica, salões de beleza e spas",
     color: "from-purple-500/20 to-purple-500/5",
+  },
+  {
+    id: "professores",
+    label: "Professores",
+    icon: GraduationCap,
+    description: "Professores, escolas e profissionais da educacao",
+    color: "from-cyan-500/20 to-cyan-500/5",
   },
   {
     id: "petshops",
