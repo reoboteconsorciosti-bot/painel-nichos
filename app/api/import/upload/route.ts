@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { NextResponse } from "next/server"
 import { POST as runImportFromFolder } from "@/app/api/criar-lista/route"
+import { getAuthenticatedUser } from "@/lib/auth"
 
 export const runtime = "nodejs"
 
@@ -116,6 +117,10 @@ function inferNichoFolderFromFileName(fileName: string): string {
 }
 
 export async function POST(req: Request) {
+  const user = await getAuthenticatedUser(req)
+  if (!user || user.role !== "admin") {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
+  }
   let uploadedPath: string | null = null
   try {
     const sourceRoot = process.env.LEADS_SOURCE_DIR

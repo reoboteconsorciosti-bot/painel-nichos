@@ -190,6 +190,11 @@ function normalizeKey(input: string): string {
 function mapFolderToNicheId(folderName: string): string {
   const folderKey = normalizeKey(folderName)
 
+  if (folderKey.includes("BLACK") && folderKey.includes("FRIDAY")) {
+    const year = folderKey.match(/20\d{2}/)?.[0] ?? String(new Date().getUTCFullYear())
+    return `black-friday-${year}`
+  }
+
   // Mapeia variações de "Empresas/Empresários" para o nicho canônico usado na UI.
   if (folderKey.includes("EMPRESAS") || folderKey.includes("EMPRESAR")) return "empresarios"
 
@@ -812,7 +817,7 @@ async function upsertBatchPrisma(
 ): Promise<{ inserted: number; updated: number; skipped: number }> {
   if (leads.length === 0) return { inserted: 0, updated: 0, skipped: 0 }
 
-  const inputs: DbLeadInput[] = leads.map((l) => ({
+  const mappedInputs: DbLeadInput[] = leads.map((l) => ({
     phone: l.telefone,
     name: toOptionalNonEmptyString(l.nome),
     nicho: toOptionalNonEmptyString(l.nicho),
@@ -821,6 +826,21 @@ async function upsertBatchPrisma(
     company: toOptionalNonEmptyString(l.razao_social),
     fantasy: undefined,
   }))
+
+  // Uploads da interface preservam a primeira ocorrência do telefone no arquivo.
+  // Além de evitar trabalho repetido, isso deixa os totais iguais ao que o banco grava.
+  let duplicateInputCount = 0
+  const seenInputPhones = new Set<string>()
+  const inputs = skipExisting
+    ? mappedInputs.filter((input) => {
+        if (seenInputPhones.has(input.phone)) {
+          duplicateInputCount += 1
+          return false
+        }
+        seenInputPhones.add(input.phone)
+        return true
+      })
+    : mappedInputs
 
   const phones = inputs.map((i) => i.phone)
   const existing = await prisma.lead.findMany({
@@ -838,10 +858,11 @@ async function upsertBatchPrisma(
   // Se skipExisting=true, não atualiza registros existentes (apenas ignora)
   // Se skipExisting=false, atualiza registros existentes (comportamento padrão)
   const toUpdate = skipExisting ? [] : inputs.filter((i) => existingSet.has(i.phone)).sort((a, b) => a.phone.localeCompare(b.phone))
-  const skippedCount = skipExisting ? existingSet.size : 0
+  const skippedCount = (skipExisting ? existingSet.size : 0) + duplicateInputCount
+  let insertedCount = 0
 
   if (toCreate.length > 0) {
-    await prisma.lead.createMany({
+    const created = await prisma.lead.createMany({
       data: toCreate.map((i) => ({
         phone: i.phone,
         name: i.name ?? null,
@@ -853,6 +874,7 @@ async function upsertBatchPrisma(
       })),
       skipDuplicates: true,
     })
+    insertedCount = created.count
   }
 
   for (const i of toUpdate) {
@@ -880,7 +902,7 @@ async function upsertBatchPrisma(
     }
   }
 
-  return { inserted: toCreate.length, updated: toUpdate.length, skipped: skippedCount }
+  return { inserted: insertedCount, updated: toUpdate.length, skipped: skippedCount }
 }
 
 export async function POST(req: Request) {

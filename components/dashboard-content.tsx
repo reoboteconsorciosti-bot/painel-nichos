@@ -3,11 +3,13 @@
 import { useState, useEffect } from "react"
 import { Search, SlidersHorizontal, LayoutGrid, CalendarDays, Check, FileText } from "lucide-react"
 import { NICHES } from "@/lib/data"
+import type { Consultant } from "@/lib/data"
 import { Input } from "@/components/ui/input"
 import { NicheCard } from "@/components/niche-card"
 import { NicheModal } from "@/components/niche-modal"
 import { SuccessDialog } from "@/components/success-dialog"
 import { ScheduleTimeline } from "@/components/schedule-timeline"
+import { BlackFridayPanel } from "@/components/black-friday-panel"
 import { jsPDF } from "jspdf"
 import * as XLSX from "xlsx"
 
@@ -55,10 +57,11 @@ const buildWhatsAppLink = (phone: string | null | undefined): string | null => {
 }
 
 export interface DashboardContentProps {
-  consultants: string[]
+  consultants: Consultant[]
+  canManageBlackFriday?: boolean
 }
 
-export function DashboardContent({ consultants }: DashboardContentProps) {
+export function DashboardContent({ consultants, canManageBlackFriday = false }: DashboardContentProps) {
   const [activeNicheId, setActiveNicheId] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [showSuccess, setShowSuccess] = useState(false)
@@ -75,7 +78,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     fetch("/api/leads-availability/all")
       .then(res => res.json())
       .then(data => {
-        if (data && data.ok && data.counts) {
+        if (data && data.ok && data.countsVisible !== false && data.counts) {
           setGlobalCounts(data.counts)
         }
       })
@@ -103,16 +106,18 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     state: string,
     city: string,
     leadCount: number,
+    consultantCrmId: string,
     consultantName: string,
     sendToCrm: boolean,
     crmOwnerId: string | null,
   ): Promise<void> => {
-    const consultorId = consultants.indexOf(consultantName) + 1
+    const consultantIndex = consultants.findIndex((consultant) => consultant.crmUserId === consultantCrmId)
+    const consultorId = consultantIndex + 1
     const quantidade = Math.max(1, leadCount)
     const nichoId = nicheIds[0] ?? ""
     const nicho = mapNichoForApi(nichoId, state)
 
-    if (!consultorId || !nicho || !state) {
+    if (!consultorId || !consultantCrmId || !nicho || !state) {
       throw new Error("invalid_payload")
     }
 
@@ -126,6 +131,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
         nicho,
         quantidade,
         consultantName,
+        consultantCrmId,
         enviarParaCrm: sendToCrm,
         crmOwnerId,
       }),
@@ -186,7 +192,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
     nicheIds: string[],
     state: string,
     city: string,
-  ): Promise<{ total: number; available: number; used: number }> => {
+  ): Promise<{ total: number | null; available: number | null; used: number | null; countsVisible: boolean }> => {
     const nichoId = nicheIds[0] ?? ""
     const nicho = mapNichoForApi(nichoId, state)
     if (!nicho || !state) throw new Error("invalid_payload")
@@ -210,6 +216,8 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
       throw new Error("failed_to_check_availability")
     }
 
+    const countsVisible = (data as { countsVisible?: unknown }).countsVisible !== false
+    if (!countsVisible) return { total: null, available: null, used: null, countsVisible: false }
     const total = Number((data as { totalMatching?: unknown }).totalMatching ?? NaN)
     const available = Number((data as { unassignedMatching?: unknown }).unassignedMatching ?? NaN)
     const used = Number((data as { assignedMatching?: unknown }).assignedMatching ?? NaN)
@@ -217,52 +225,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
       throw new Error("invalid_api_response")
     }
 
-    return { total, available, used }
-  }
-
-  const handleResetAvailability = async (
-    nicheIds: string[],
-    state: string,
-    city: string,
-    resetToken: string,
-  ): Promise<{ total: number; available: number; used: number; deletedLinks: number }> => {
-    const nichoId = nicheIds[0] ?? ""
-    const nicho = mapNichoForApi(nichoId, state)
-    if (!nicho || !state || !resetToken) throw new Error("invalid_payload")
-
-    const res = await fetch("/api/leads-reset", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nicho, estado: state, cidade: city, resetToken }),
-    })
-
-    const data = (await res.json().catch(() => null)) as unknown
-    if (!res.ok) {
-      const msg =
-        data && typeof data === "object" && "error" in data
-          ? String((data as { error?: unknown }).error)
-          : "failed_to_reset"
-      throw new Error(msg)
-    }
-
-    if (!data || typeof data !== "object" || (data as { ok?: unknown }).ok !== true) {
-      throw new Error("failed_to_reset")
-    }
-
-    const total = Number((data as { totalMatching?: unknown }).totalMatching ?? NaN)
-    const available = Number((data as { unassignedMatching?: unknown }).unassignedMatching ?? NaN)
-    const used = Number((data as { assignedMatching?: unknown }).assignedMatching ?? NaN)
-    const deletedLinks = Number((data as { deletedLinks?: unknown }).deletedLinks ?? NaN)
-    if (
-      !Number.isFinite(total) ||
-      !Number.isFinite(available) ||
-      !Number.isFinite(used) ||
-      !Number.isFinite(deletedLinks)
-    ) {
-      throw new Error("invalid_api_response")
-    }
-
-    return { total, available, used, deletedLinks }
+    return { total, available, used, countsVisible: true }
   }
 
   const handleCloseSuccess = () => {
@@ -602,6 +565,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
 
         {/* Grid de nichos */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {canManageBlackFriday && <BlackFridayPanel />}
           {filteredNiches.map((niche) => (
             <NicheCard
               key={niche.id}
@@ -630,8 +594,7 @@ export function DashboardContent({ consultants }: DashboardContentProps) {
         activeNicheId={activeNicheId}
         onGenerate={handleGenerate}
         onCheckAvailability={handleCheckAvailability}
-        onResetAvailability={handleResetAvailability}
-        consultants={consultants}
+      consultants={consultants}
       />
 
       {lastCreated && (

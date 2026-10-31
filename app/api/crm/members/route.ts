@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
+import { getAuthenticatedUser } from "@/lib/auth"
 
 export const dynamic = "force-dynamic"
-export const revalidate = 60 // Cache de 60 segundos (pode ser ajustado)
 
-export async function GET() {
+export async function GET(req: Request) {
+  const user = await getAuthenticatedUser(req)
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
   try {
     const crmUrl = (process.env.CRM_API_URL ?? "").trim().replace(/\/+$/, "")
     const crmKey = (process.env.CRM_API_KEY ?? "").trim()
@@ -24,11 +26,12 @@ export async function GET() {
     if (!res.ok) {
       const text = await res.text().catch(() => "")
       console.error("[CRM_MEMBERS] Erro do CRM:", res.status, text.slice(0, 150) + (text.length > 150 ? "..." : ""))
-      return NextResponse.json({ ok: false, error: "FALHA_FETCH_CRM" }, { status: 502 })
+      return NextResponse.json({ ok: false, error: "FALHA_FETCH_CRM", crmStatus: res.status }, { status: 502 })
     }
 
-    const data = await res.json()
-    if (!data.success || !data.data || !data.data.members) {
+    const data = await res.json().catch(() => null)
+    if (!data || data.success !== true || !data.data || !Array.isArray(data.data.members)) {
+      console.error("[CRM_MEMBERS] Formato inesperado na resposta de /api/v1/members")
       return NextResponse.json({ ok: false, error: "RESPOSTA_CRM_INVALIDA" }, { status: 502 })
     }
 
@@ -41,6 +44,7 @@ export async function GET() {
     })
   } catch (error) {
     console.error("[CRM_MEMBERS] Erro interno:", error)
-    return NextResponse.json({ ok: false, error: "ERRO_INTERNO" }, { status: 500 })
+    const isConnectionError = error instanceof TypeError
+    return NextResponse.json({ ok: false, error: isConnectionError ? "CRM_CONNECTION_FAILED" : "ERRO_INTERNO" }, { status: 500 })
   }
 }

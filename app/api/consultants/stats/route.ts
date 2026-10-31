@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
+import { getAuthenticatedUser } from "@/lib/auth"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(req: Request) {
+  const user = await getAuthenticatedUser(req)
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
+
+  // Legacy list rows store a numeric position rather than a consultant ID;
+  // those totals cannot be safely attributed to a supervisor's team.
+  if (user.role !== "admin") return NextResponse.json({ ok: true, stats: {} })
+
   try {
     const now = new Date()
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)

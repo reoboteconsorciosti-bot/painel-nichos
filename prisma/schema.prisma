@@ -19,6 +19,7 @@ model Lead {
   createdAt DateTime @default(now()) @map("created_at")
 
   listaLeads ListaLead[]
+  blackFridayClaim BlackFridayLead?
 
   @@map("leads")
   @@index([city], map: "idx_leads_city")
@@ -40,6 +41,7 @@ model ImportLog {
 model Lista {
   id          Int      @id @default(autoincrement())
   consultorId Int      @map("consultor_id")
+  crmConsultantId String? @map("crm_consultant_id")
   nicho       String
   quantidade  Int      @default(0)
   createdAt   DateTime @default(now()) @map("created_at")
@@ -51,7 +53,29 @@ model Lista {
 
   @@map("listas")
   @@index([consultorId], map: "idx_listas_consultor_id")
+  @@index([crmConsultantId, createdAt], map: "idx_listas_crm_consultant_created_at")
   @@index([nicho], map: "idx_listas_nicho")
+}
+
+model ConsultantQuota {
+  crmUserId    String   @id @map("crm_user_id")
+  monthlyLimit Int      @default(300) @map("monthly_limit")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("consultant_quotas")
+}
+
+model ConsultantMonthlyUsage {
+  id         Int      @id @default(autoincrement())
+  crmUserId  String   @map("crm_user_id")
+  monthStart DateTime @map("month_start") @db.Date
+  used       Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([crmUserId, monthStart], map: "uq_consultant_monthly_usage_user_month")
+  @@index([monthStart], map: "idx_consultant_monthly_usage_month")
+  @@map("consultant_monthly_usage")
 }
 
 model ListaLead {
@@ -70,13 +94,46 @@ model ListaLead {
 
 model Consultant {
   id           String   @id @default(uuid())
+  crmMemberId  String?  @unique(map: "uq_consultants_crm_member_id") @map("crm_member_id")
   name         String
   supervisorId String   @map("supervisor_id")
   createdAt    DateTime @default(now()) @map("created_at")
+  blackFridayLeads BlackFridayLead[]
 
   @@map("consultants")
   @@index([supervisorId], map: "idx_consultants_supervisor_id")
-  @@unique([supervisorId, name], map: "uq_consultants_supervisor_id_name")
+}
+
+model BlackFridayCampaign {
+  id        Int              @id @default(autoincrement())
+  year      Int              @unique
+  name      String
+  nicho     String           @unique
+  isActive  Boolean          @default(true) @map("is_active")
+  startsAt  DateTime         @map("starts_at") @db.Date
+  endsAt    DateTime         @map("ends_at") @db.Date
+  createdAt DateTime         @default(now()) @map("created_at")
+  leads     BlackFridayLead[]
+
+  @@map("black_friday_campaigns")
+}
+
+model BlackFridayLead {
+  id           Int               @id @default(autoincrement())
+  campaignId   Int               @map("campaign_id")
+  leadId       Int               @unique @map("lead_id")
+  supervisorId String            @map("supervisor_id")
+  consultantId String?           @map("consultant_id")
+  consultantName String          @map("consultant_name")
+  assignedAt   DateTime          @default(now()) @map("assigned_at")
+  crmStatus    String            @default("not_requested") @map("crm_status")
+  campaign     BlackFridayCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  lead         Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  consultant   Consultant?       @relation(fields: [consultantId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, supervisorId], map: "idx_black_friday_campaign_supervisor")
+  @@index([consultantId], map: "idx_black_friday_consultant")
+  @@map("black_friday_leads")
 }
 
 model AppSetting {

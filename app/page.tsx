@@ -4,17 +4,14 @@ import { type DragEvent, useEffect, useState } from "react"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { DashboardContent } from "@/components/dashboard-content"
 import { Sidebar } from "@/components/sidebar"
-import { SupervisorDialog } from "@/components/supervisor-dialog"
 import { LogginScreen } from "@/components/loggin-screen"
 import { CONSULTORES, NICHES, type SupervisorConfig, type Consultant } from "@/lib/data"
-import { Plus, X, User as UserIcon } from "lucide-react"
+import { User as UserIcon } from "lucide-react"
+import { ConsultantQuotaPanel } from "@/components/consultant-quota-panel"
 
 export default function Page() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "admin" | "team" | "import">("dashboard")
-  const [supervisors, setSupervisors] = useState<SupervisorConfig[]>([])
   const [consultants, setConsultants] = useState<Consultant[]>(CONSULTORES)
-  const [isSupervisorDialogOpen, setIsSupervisorDialogOpen] = useState(false)
-  const [newConsultantName, setNewConsultantName] = useState("")
   const [teamStats, setTeamStats] = useState<Record<number, { historic: number, active: number }> | null>(null)
 
   const [whatsNotifyNumber, setWhatsNotifyNumber] = useState("")
@@ -31,9 +28,6 @@ export default function Page() {
   const [importResult, setImportResult] = useState<Record<string, unknown> | null>(null)
 
   // Reset de listas
-  const [resetLoading, setResetLoading] = useState(false)
-  const [resetError, setResetError] = useState<string | null>(null)
-  const [resetSuccess, setResetSuccess] = useState<string | null>(null)
 
   // Controle de login (se currentUser for null, exibe a tela de login)
   const [currentUser, setCurrentUser] = useState<SupervisorConfig | null>(null)
@@ -52,12 +46,6 @@ export default function Page() {
         setAuthLoading(false)
       })
 
-    fetch("/api/supervisors")
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok && d.supervisors) setSupervisors(d.supervisors)
-      })
-      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -65,9 +53,7 @@ export default function Page() {
 
     const load = async () => {
       try {
-        const supervisorId = currentUser.role === "admin" ? "" : currentUser.id
-        const url = supervisorId ? `/api/consultants?supervisorId=${encodeURIComponent(supervisorId)}` : "/api/consultants"
-        const res = await fetch(url)
+        const res = await fetch("/api/consultants", { credentials: "include", cache: "no-store" })
         const data = (await res.json().catch(() => null)) as unknown
         if (!res.ok) return
         if (!data || typeof data !== "object" || (data as { ok?: unknown }).ok !== true) return
@@ -76,11 +62,12 @@ export default function Page() {
         const parsed: Consultant[] = rows
           .filter((r) => r && typeof r === "object")
           .map((r) => {
-            const o = r as { id?: unknown; name?: unknown; supervisorId?: unknown }
+            const o = r as { id?: unknown; name?: unknown; supervisorId?: unknown; crmUserId?: unknown }
             return {
               id: String(o.id ?? ""),
               name: String(o.name ?? ""),
               supervisorId: String(o.supervisorId ?? ""),
+              crmUserId: String(o.crmUserId ?? ""),
             }
           })
           .filter((c) => !!c.id && !!c.name && !!c.supervisorId)
@@ -94,7 +81,7 @@ export default function Page() {
   }, [currentUser])
 
   useEffect(() => {
-    if (activeTab === "team" && currentUser) {
+    if (activeTab === "team" && currentUser?.role === "admin") {
       fetch("/api/consultants/stats")
         .then(r => r.json())
         .then(d => {
@@ -123,75 +110,11 @@ export default function Page() {
 
   const handleTabChange = (tab: "dashboard" | "admin" | "team" | "import") => {
     setActiveTab(tab)
-    if (tab === "admin") {
-      setIsSupervisorDialogOpen(true)
-    }
-  }
-
-  const handleAddSupervisor = (newSup: SupervisorConfig) => {
-    // Evita emails duplicados
-    if (!supervisors.find(s => s.email === newSup.email)) {
-      setSupervisors((prev) => [...prev, newSup])
-    }
-  }
-
-  const handleRemoveSupervisor = (id: string) => {
-    setSupervisors((prev) => prev.filter((s) => s.id !== id))
-  }
-
-  const handleAddConsultant = () => {
-    if (!newConsultantName.trim() || !currentUser) return
-
-    const name = newConsultantName.trim()
-    const supervisorId = currentUser.id
-
-    ;(async () => {
-      try {
-        const res = await fetch("/api/consultants", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name, supervisorId }),
-        })
-        const data = (await res.json().catch(() => null)) as unknown
-        if (!res.ok) return
-        if (!data || typeof data !== "object" || (data as { ok?: unknown }).ok !== true) return
-        const c = (data as { consultant?: unknown }).consultant
-        if (!c || typeof c !== "object") return
-        const cc = c as { id?: unknown; name?: unknown; supervisorId?: unknown }
-        const created: Consultant = {
-          id: String(cc.id ?? ""),
-          name: String(cc.name ?? ""),
-          supervisorId: String(cc.supervisorId ?? ""),
-        }
-        if (!created.id || !created.name || !created.supervisorId) return
-        setConsultants((prev) => [...prev, created])
-        setNewConsultantName("")
-      } catch {
-        // ignore
-      }
-    })()
-  }
-
-  const handleRemoveConsultant = (id: string) => {
-    if (!id) return
-    ;(async () => {
-      try {
-        await fetch(`/api/consultants/${encodeURIComponent(id)}`, { method: "DELETE" })
-      } catch {
-        // ignore
-      } finally {
-        setConsultants((prev) => prev.filter((c) => c.id !== id))
-      }
-    })()
   }
 
   // Filtra os consultores para mostrar apenas os do supervisor logado (ou todos para admin)
   // Adicionado filtro de segurança para nunca mostrar nomes de ADM ou Supervisor no dropdown de consultor
-  const myConsultants = consultants.filter(c => {
-    const isOwner = currentUser?.role === "admin" ? true : c.supervisorId === currentUser?.id;
-    const isSystemUser = supervisors.some(s => s.name === c.name);
-    return isOwner && !isSystemUser;
-  })
+  const myConsultants = consultants
 
   if (authLoading) {
     return (
@@ -207,10 +130,7 @@ export default function Page() {
   // Se não estiver logado, exibe apenas a tela de login
   if (!currentUser) {
     return (
-      <LogginScreen
-        supervisors={supervisors}
-        onLogin={(user) => setCurrentUser(user)}
-      />
+      <LogginScreen />
     )
   }
 
@@ -240,45 +160,6 @@ export default function Page() {
       setWhatsNotifyError("Nao foi possivel salvar o numero")
     } finally {
       setWhatsNotifyLoading(false)
-    }
-  }
-
-  const handleResetAllListas = async () => {
-    if (!currentUser || currentUser.role !== "admin") return
-    if (!confirm("Tem certeza que deseja resetar TODAS as listas?\n\nIsso irá:\n- Deletar todas as listas criadas\n- Liberar todos os leads para extração novamente\n\nEsta ação não pode ser desfeita!")) return
-
-    setResetLoading(true)
-    setResetError(null)
-    setResetSuccess(null)
-
-    try {
-      const res = await fetch("/api/admin/reset-listas", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          resetToken: "4e9b1f7c8a2d5e6f0Pc3HLb9aO31dI72eU4fY6c2YD8a5TG3e7Tf1c9b2a6d4e8fA3c7b1SD5e9",
-          confirm: "deletar tudo"
-        }),
-      })
-      const data = await res.json().catch(() => null)
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "failed")
-      }
-      setResetSuccess(`Reset concluído! ${data.deleted?.listas || 0} listas deletadas.`)
-      // Recarrega as estatísticas
-      if (activeTab === "team") {
-        fetch("/api/consultants/stats")
-          .then(r => r.json())
-          .then(d => {
-            if (d.ok && d.stats) setTeamStats(d.stats)
-          })
-          .catch(() => {})
-      }
-    } catch {
-      setResetError("Não foi possível resetar as listas")
-    } finally {
-      setResetLoading(false)
     }
   }
 
@@ -312,14 +193,19 @@ export default function Page() {
       })
 
       const data = (await res.json().catch(() => null)) as unknown
-      if (!res.ok || !data || typeof data !== "object") {
-        throw new Error("Falha ao importar arquivo")
-      }
-
+      if (!data || typeof data !== "object") throw new Error("O servidor retornou uma resposta inválida")
       const payload = data as { ok?: unknown; error?: unknown }
       if (payload.ok !== true) {
-        throw new Error(String(payload.error ?? "Falha ao importar arquivo"))
+        const errors: Record<string, string> = {
+          unauthorized: "Sua sessão não permite importar arquivos. Entre novamente como administrador.",
+          file_required: "Selecione um arquivo para importar.",
+          invalid_file_type: "Formato não aceito. Envie um arquivo .xlsx ou .csv.",
+          LEADS_SOURCE_DIR_not_configured: "A pasta de origem dos leads não está configurada no servidor.",
+          ETL_TOKEN_not_configured: "A integração de importação não está configurada no servidor.",
+        }
+        throw new Error(errors[String(payload.error ?? "")] ?? String(payload.error ?? "Falha ao importar arquivo"))
       }
+      if (!res.ok) throw new Error("Falha ao importar arquivo")
 
       setImportResult(data as Record<string, unknown>)
     } catch (e) {
@@ -337,6 +223,8 @@ export default function Page() {
     setImportForceState("")
     setImportError(null)
     setImportResult(null)
+    const fileInput = document.getElementById("import-file") as HTMLInputElement | null
+    if (fileInput) fileInput.value = ""
   }
 
   const handleImportDragOver = (e: DragEvent<HTMLLabelElement>) => {
@@ -357,9 +245,31 @@ export default function Page() {
     setImportDragActive(false)
     const droppedFile = e.dataTransfer.files?.[0] ?? null
     if (!droppedFile) return
+    if (!/\.(xlsx|csv)$/i.test(droppedFile.name)) {
+      setImportFile(null)
+      setImportResult(null)
+      setImportError("Formato não aceito. Envie um arquivo .xlsx ou .csv.")
+      return
+    }
     setImportFile(droppedFile)
     setImportError(null)
+    setImportResult(null)
   }
+
+  const selectImportFile = (file: File | null) => {
+    setImportResult(null)
+    if (file && !/\.(xlsx|csv)$/i.test(file.name)) {
+      setImportFile(null)
+      setImportError("Formato não aceito. Envie um arquivo .xlsx ou .csv.")
+      return
+    }
+    setImportFile(file)
+    setImportError(null)
+  }
+
+  const importStats = importResult?.stats && typeof importResult.stats === "object"
+    ? importResult.stats as Record<string, unknown>
+    : null
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -376,7 +286,10 @@ export default function Page() {
         />
         <main className="flex-1">
           {activeTab === "dashboard" ? (
-            <DashboardContent consultants={myConsultants.map(c => c.name)} />
+            <DashboardContent
+              consultants={myConsultants}
+              canManageBlackFriday={currentUser.role === "supervisor" || currentUser.role === "admin"}
+            />
           ) : activeTab === "team" ? (
             <div className="mx-auto max-w-4xl p-6">
               <div className="mb-8">
@@ -386,24 +299,9 @@ export default function Page() {
                 </p>
               </div>
 
-              <div className="flex gap-2 mb-6">
-                <div className="flex-1 relative">
-                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                  <input
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-9 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    placeholder="Nome do novo consultor"
-                    value={newConsultantName}
-                    onChange={(e) => setNewConsultantName(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleAddConsultant()}
-                  />
-                </div>
-                <button
-                  onClick={handleAddConsultant}
-                  className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:brightness-110 flex items-center gap-2"
-                >
-                  <Plus className="size-4" /> Adicionar
-                </button>
-              </div>
+              <p className="mb-6 text-sm text-muted-foreground">
+                A equipe é sincronizada com os membros ativos de vendas cadastrados no CRM. Para incluir ou mover alguém, atualize a equipe no CRM.
+              </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {myConsultants.length === 0 ? (
@@ -433,13 +331,6 @@ export default function Page() {
                           </div>
                         )}
                       </div>
-                      <button
-                        onClick={() => handleRemoveConsultant(c.id)}
-                        className="p-2 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
-                        title="Remover da equipe"
-                      >
-                        <X className="size-4" />
-                      </button>
                     </div>
                   ))
                 )}
@@ -467,6 +358,7 @@ export default function Page() {
                       disabled={importLoading}
                     >
                       <option value="">Selecione um nicho</option>
+                      <option value={`black-friday-${new Date().getUTCFullYear()}`}>Black Friday {new Date().getUTCFullYear()} (campanha)</option>
                       {NICHES.map((niche) => (
                         <option key={niche.id} value={niche.id}>
                           {niche.label}
@@ -530,7 +422,7 @@ export default function Page() {
                     </p>
                     {importFile && (
                       <p className="mt-3 text-xs text-primary">
-                        Arquivo selecionado: {importFile.name}
+                        Arquivo selecionado: {importFile.name} ({(importFile.size / 1024 / 1024).toFixed(2)} MB)
                       </p>
                     )}
                   </label>
@@ -538,7 +430,7 @@ export default function Page() {
                     id="import-file"
                     type="file"
                     accept=".xlsx,.csv"
-                    onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+                    onChange={(e) => selectImportFile(e.target.files?.[0] ?? null)}
                     className="hidden"
                     disabled={importLoading}
                   />
@@ -554,10 +446,10 @@ export default function Page() {
                   </button>
                   <button
                     onClick={handleClearImportSelection}
-                    disabled={importLoading || !importFile}
+                    disabled={importLoading || (!importFile && !importResult)}
                     className="h-10 rounded-md border border-border bg-background px-4 text-sm font-semibold text-foreground hover:bg-secondary disabled:opacity-60"
                   >
-                    Desimportar arquivo
+                    Limpar seleção
                   </button>
                 </div>
 
@@ -567,10 +459,42 @@ export default function Page() {
 
                 {importResult && (
                   <div className="rounded-md border border-border bg-background p-3">
-                    <p className="text-sm font-semibold mb-2">Resultado da importacao</p>
-                    <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all">
-                      {JSON.stringify(importResult, null, 2)}
-                    </pre>
+                    <p className="text-sm font-semibold mb-2">Resultado da importação</p>
+                    {importStats ? (
+                      <>
+                        <p className="mb-3 text-xs text-muted-foreground">
+                          Telefones já cadastrados e repetidos no mesmo arquivo são ignorados; os registros existentes não são alterados.
+                        </p>
+                        <dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                          {([
+                            ["Arquivos processados", "arquivos"],
+                            ["Linhas lidas", "linhasLidas"],
+                            ["Leads inseridos", "inseridos"],
+                            ["Duplicados ignorados", "ignoradosDuplicados"],
+                            ["Linhas inválidas", "linhasInvalidas"],
+                            ["Ocorrências de erro", "erros"],
+                          ] as const).map(([label, key]) => (
+                            <div key={key} className="rounded-md border border-border px-3 py-2">
+                              <dt className="text-muted-foreground">{label}</dt>
+                              <dd className="mt-1 font-semibold text-foreground">{String(importStats[key] ?? 0)}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          O arquivo é processado em até 5.000 linhas. Se sua planilha tiver mais linhas, divida-a em arquivos menores antes de importar.
+                        </p>
+                        {Number(importStats.erros ?? 0) > 0 && (
+                          <details className="mt-3 text-xs">
+                            <summary className="cursor-pointer font-medium">Ver detalhes dos erros</summary>
+                            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                              {JSON.stringify({ arquivosComErro: importStats.arquivosComErro, errosDetalhes: importStats.errosDetalhes }, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Importação concluída.</p>
+                    )}
                   </div>
                 )}
               </div>
@@ -588,33 +512,16 @@ export default function Page() {
                   </div>
                 ) : (
                   <div className="mx-auto max-w-lg space-y-4">
-                    <button
-                      onClick={() => setIsSupervisorDialogOpen(true)}
-                      className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:brightness-110"
-                    >
-                      Gerenciar Equipe ({supervisors.length})
-                    </button>
-
-                    <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-left">
-                      <p className="text-sm font-semibold text-destructive">⚠️ Reset de Listas</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Deleta todas as listas criadas e libera todos os leads para extração novamente. Os leads NÃO serão removidos.
+                    <div className="rounded-xl border border-border bg-secondary/20 p-4 text-left">
+                      <p className="text-sm font-semibold">Acessos e equipes do CRM</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Supervisores, gestores e consultores são lidos diretamente do CRM. Cadastros e alterações de equipe devem ser feitos lá.
                       </p>
-
-                      <button
-                        onClick={handleResetAllListas}
-                        disabled={resetLoading}
-                        className="mt-3 h-10 w-full rounded-md bg-destructive px-4 text-sm font-semibold text-destructive-foreground hover:brightness-110 disabled:opacity-60"
-                      >
-                        {resetLoading ? "Resetando..." : "Resetar Todas as Listas"}
-                      </button>
-                      {resetSuccess && (
-                        <p className="text-xs text-emerald-600 mt-2">{resetSuccess}</p>
-                      )}
-                      {resetError && (
-                        <p className="text-xs text-destructive mt-2">{resetError}</p>
-                      )}
                     </div>
+
+                    {currentUser.isOwner ? <ConsultantQuotaPanel /> : (
+                      <p className="rounded-lg border border-border p-4 text-xs text-muted-foreground">Somente donos do CRM podem ajustar limites e permissoes.</p>
+                    )}
 
                     <div className="rounded-xl border border-border bg-secondary/20 p-4 text-left">
                       <p className="text-sm font-semibold text-foreground">WhatsApp - Numero de notificacao</p>
@@ -656,13 +563,6 @@ export default function Page() {
       </div>
 
       {/* Modal de Supervisores fica global na página */}
-      <SupervisorDialog
-        open={isSupervisorDialogOpen}
-        onClose={() => setIsSupervisorDialogOpen(false)}
-        supervisors={supervisors}
-        onAdd={handleAddSupervisor}
-        onRemove={handleRemoveSupervisor}
-      />
     </div>
   )
 }

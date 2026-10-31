@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { NICHES } from "@/lib/data"
+import type { Consultant } from "@/lib/data"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { LocationSelector } from "@/components/location-selector"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -22,10 +23,9 @@ interface NicheModalProps {
     isOpen: boolean
     onClose: () => void
     activeNicheId: string | null
-    onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantName: string, sendToCrm: boolean, crmOwnerId: string | null) => Promise<void>
-    onCheckAvailability: (nicheIds: string[], state: string, city: string) => Promise<{ total: number; available: number; used: number }>
-    onResetAvailability: (nicheIds: string[], state: string, city: string, resetToken: string) => Promise<{ total: number; available: number; used: number; deletedLinks: number }>
-    consultants: string[]
+    onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantCrmId: string, consultantName: string, sendToCrm: boolean, crmOwnerId: string | null) => Promise<void>
+    onCheckAvailability: (nicheIds: string[], state: string, city: string) => Promise<{ total: number | null; available: number | null; used: number | null; countsVisible: boolean }>
+    consultants: Consultant[]
 }
 
 export function NicheModal({
@@ -34,14 +34,13 @@ export function NicheModal({
     activeNicheId,
     onGenerate,
     onCheckAvailability,
-    onResetAvailability,
     consultants,
 }: NicheModalProps) {
     const [selectedNiches, setSelectedNiches] = useState<string[]>([])
     const [selectedState, setSelectedState] = useState("")
     const [selectedCity, setSelectedCity] = useState("")
     const [leadCount, setLeadCount] = useState<number | "">("")
-    const [consultantName, setConsultantName] = useState("")
+    const [consultantCrmId, setConsultantCrmId] = useState("")
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [submitError, setSubmitError] = useState<string | null>(null)
     const [noLeadsModalOpen, setNoLeadsModalOpen] = useState(false)
@@ -61,20 +60,17 @@ export function NicheModal({
     const [crmMembersFetched, setCrmMembersFetched] = useState(false)
     const [crmOwnerId, setCrmOwnerId] = useState<string>("none")
 
-    const [availability, setAvailability] = useState<{ total: number; available: number; used: number } | null>(null)
+    const [availability, setAvailability] = useState<{ total: number | null; available: number | null; used: number | null; countsVisible: boolean } | null>(null)
     const [availabilityLoading, setAvailabilityLoading] = useState(false)
     const [availabilityError, setAvailabilityError] = useState<string | null>(null)
-    const [resetLoading, setResetLoading] = useState(false)
-    const [resetError, setResetError] = useState<string | null>(null)
 
     const resetForm = () => {
         setSelectedState("")
         setSelectedCity("")
         setLeadCount("")
-        setConsultantName("")
+        setConsultantCrmId("")
         setAvailability(null)
         setAvailabilityError(null)
-        setResetError(null)
         setSendToCrm(false)
         setCrmOwnerId("none")
         setCrmMembersFetched(false)
@@ -100,7 +96,7 @@ export function NicheModal({
     }, [sendToCrm, crmMembersFetched, crmMembersLoading])
 
     const validateForm = () => {
-        return selectedState !== "" && typeof leadCount === "number" && (leadCount as number) > 0 && consultantName.trim() !== ""
+        return selectedState !== "" && typeof leadCount === "number" && (leadCount as number) > 0 && consultantCrmId.trim() !== ""
     }
 
     // Reset state when modal opens
@@ -125,7 +121,7 @@ export function NicheModal({
         setSubmitError(null)
         try {
             // Se já sabemos a disponibilidade, bloqueia cedo.
-            if (availability && leadCount > availability.available) {
+            if (availability && availability.available !== null && leadCount > availability.available) {
                 setLeadsInsufficientModalOpen(true)
                 return
             }
@@ -134,7 +130,7 @@ export function NicheModal({
             if (!availability && selectedState && selectedNiches.length > 0) {
                 const res = await onCheckAvailability(selectedNiches, selectedState, selectedCity)
                 setAvailability(res)
-                if (leadCount > res.available) {
+                if (res.available !== null && leadCount > res.available) {
                     setLeadsInsufficientModalOpen(true)
                     return
                 }
@@ -145,7 +141,8 @@ export function NicheModal({
                 selectedState,
                 selectedCity,
                 leadCount,
-                consultantName,
+                consultantCrmId,
+                consultants.find((consultant) => consultant.crmUserId === consultantCrmId)?.name ?? "",
                 sendToCrm,
                 sendToCrm && crmOwnerId !== "none" ? crmOwnerId : null
             )
@@ -183,23 +180,7 @@ export function NicheModal({
         }
     }
 
-    const handleResetAvailability = async () => {
-        if (!selectedState || selectedNiches.length === 0) return
-        const resetToken = window.prompt("Digite o RESET_TOKEN para liberar os leads usados dessa cidade/UF/nicho:")
-        if (!resetToken || !resetToken.trim()) return
 
-        setResetLoading(true)
-        setResetError(null)
-        try {
-            const res = await onResetAvailability(selectedNiches, selectedState, selectedCity, resetToken.trim())
-            setAvailability({ total: res.total, available: res.available, used: res.used })
-        } catch (err) {
-            const raw = err instanceof Error ? err.message : "failed_to_reset"
-            setResetError(raw)
-        } finally {
-            setResetLoading(false)
-        }
-    }
 
     return (
         <>
@@ -281,7 +262,7 @@ export function NicheModal({
                                     const val = e.target.value
                                     const next = val === "" ? "" : Number(val)
                                     setLeadCount(next)
-                                    if (typeof next === "number" && availability && next > availability.available) {
+                                    if (typeof next === "number" && availability && availability.available !== null && next > availability.available) {
                                         setLeadsInsufficientModalOpen(true)
                                     }
                                 }}
@@ -301,36 +282,23 @@ export function NicheModal({
                                 </span>
                             </div>
 
-                            <div className="flex gap-2">
+                            <div className="flex">
                                 <button
                                     type="button"
                                     onClick={handleCheckAvailability}
-                                    disabled={!selectedState || availabilityLoading || resetLoading}
+                                    disabled={!selectedState || availabilityLoading}
                                     className={cn(
                                         "flex-1 h-10 rounded-md border text-sm font-semibold transition-all",
-                                        !selectedState || availabilityLoading || resetLoading
+                                        !selectedState || availabilityLoading
                                             ? "cursor-not-allowed border-border bg-secondary text-muted-foreground opacity-60"
                                             : "border-border bg-background hover:bg-secondary/40",
                                     )}
                                 >
                                     {availabilityLoading ? "Consultando..." : "Consultar"}
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={handleResetAvailability}
-                                    disabled={!selectedState || availabilityLoading || resetLoading}
-                                    className={cn(
-                                        "flex-1 h-10 rounded-md border text-sm font-semibold transition-all",
-                                        !selectedState || availabilityLoading || resetLoading
-                                            ? "cursor-not-allowed border-border bg-secondary text-muted-foreground opacity-60"
-                                            : "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15",
-                                    )}
-                                >
-                                    {resetLoading ? "Resetando..." : "Reset"}
-                                </button>
                             </div>
 
-                            {availability && (
+                            {availability?.countsVisible && (
                                 <div className="mt-2">
                                     <div className="text-sm text-muted-foreground">
                                         Total no banco: <span className="font-semibold text-foreground">{availability.total}</span>
@@ -344,8 +312,8 @@ export function NicheModal({
                             {availabilityError && (
                                 <p className="text-xs text-destructive mt-1">{availabilityError}</p>
                             )}
-                            {resetError && (
-                                <p className="text-xs text-destructive mt-1">{resetError}</p>
+                            {availability && !availability.countsVisible && (
+                                <p className="text-xs text-muted-foreground mt-1">Os totais foram ocultados pelo proprietário; o servidor valida a quantidade solicitada.</p>
                             )}
                             <p className="text-xs text-muted-foreground mt-1">
                                 O total e a quantidade de leads existentes no banco. "Disponiveis agora" sao os que ainda nao foram usados em listas. Se a cidade estiver em branco, consulta o estado inteiro.
@@ -358,16 +326,16 @@ export function NicheModal({
                                     Nome do Consultor
                                 </span>
                             </div>
-                            <Select value={consultantName} onValueChange={setConsultantName}>
+                            <Select value={consultantCrmId} onValueChange={setConsultantCrmId}>
                                 <SelectTrigger className="w-full h-10 bg-background border-border">
                                     <SelectValue placeholder="Selecione o consultor" />
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectGroup>
                                         <SelectLabel>Equipe</SelectLabel>
-                                        {consultants.map((name) => (
-                                            <SelectItem key={name} value={name}>
-                                                {name}
+                                        {consultants.map((consultant) => (
+                                            <SelectItem key={consultant.crmUserId ?? consultant.id} value={consultant.crmUserId ?? ""}>
+                                                {consultant.name}
                                             </SelectItem>
                                         ))}
                                     </SelectGroup>

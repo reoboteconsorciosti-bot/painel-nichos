@@ -35,6 +35,7 @@ export async function GET(req: Request) {
         name: payload.name as string,
         email: payload.email as string,
         role: payload.role as string,
+        isOwner: payload.isOwner === true,
       },
     })
   } catch (err) {

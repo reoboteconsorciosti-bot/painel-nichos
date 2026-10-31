@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { Prisma, type Prisma as PrismaType } from "@prisma/client"
+import { getAuthenticatedUser } from "@/lib/auth"
+import { syncCRMConsultants } from "@/lib/crm-members"
+import { consumeConsultantMonthlyQuota } from "@/lib/consultant-quotas"
 
 export const runtime = "nodejs"
 
 type CreateListaBody = {
   consultorId?: unknown
+  consultantCrmId?: unknown
   quantidade?: unknown
   estado?: unknown
   cidade?: unknown
@@ -214,37 +218,12 @@ async function pushLeadsToCRM(
   }
 }
 
-async function checkMonthlyLimit(tx: PrismaType.TransactionClient, consultorId: number, requestedQuantity: number) {
-  const now = new Date()
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-
-  const count = await tx.listaLead.count({
-    where: {
-      lista: {
-        consultorId,
-        createdAt: {
-          gte: startOfMonth,
-        },
-      }
-    },
-  })
-
-  // Limite mensal de LEADS (contatos) por consultor
-  if (count + requestedQuantity > 300) {
-    const remaining = Math.max(0, 300 - count)
-    if (remaining === 0) {
-      throw new Error(`limit_exceeded|O seu limite mensal de 300 leads foi atingido. Tente novamente no próximo mês.`)
-    } else {
-      throw new Error(`limit_exceeded|Limite excedido: você já gerou ${count} leads neste mês. Você só pode gerar mais ${remaining} leads (solicitado: ${requestedQuantity}).`)
-    }
-  }
-}
-
-
 export async function POST(req: Request) {
+  const user = await getAuthenticatedUser(req)
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
   const body = (await req.json().catch(() => ({}))) as CreateListaBody
 
-  const consultorId = parsePositiveInt(body.consultorId)
+  const consultantCrmId = String(body.consultantCrmId ?? "").trim()
   const quantidadeRaw = parsePositiveInt(body.quantidade)
   const estadoRaw = String(body.estado ?? "").trim()
   const cidadeRaw = String(body.cidade ?? "").trim()
@@ -259,17 +238,32 @@ export async function POST(req: Request) {
   const nicho = nichoRaw
   const consultantName = consultantNameRaw
 
-  if (!consultorId || !quantidade || !estado || !nicho || !consultantName) {
+  if (nicho.toLowerCase().startsWith("black-friday-")) {
+    return NextResponse.json({ ok: false, error: "campaign_requires_supervisor_release" }, { status: 403 })
+  }
+
+  if (!consultantCrmId || !quantidade || !estado || !nicho || !consultantName) {
     return NextResponse.json(
       { ok: false, error: "invalid_payload" },
       { status: 400 },
     )
   }
 
+  const currentConsultants = await syncCRMConsultants(user).catch(() => null)
+  if (!currentConsultants) return NextResponse.json({ ok: false, error: "crm_members_unavailable" }, { status: 502 })
+  const selectedConsultantIndex = currentConsultants.findIndex((consultant) =>
+    consultant.crmUserId === consultantCrmId &&
+    consultant.name.localeCompare(consultantName, undefined, { sensitivity: "accent" }) === 0 &&
+    (user.role === "admin" || consultant.supervisorId === user.id),
+  )
+  if (selectedConsultantIndex < 0) return NextResponse.json({ ok: false, error: "consultant_outside_team" }, { status: 403 })
+  const consultorId = selectedConsultantIndex + 1
+
   try {
     const result = await prisma.$transaction(async (tx: PrismaType.TransactionClient) => {
+      // Serialize regular extraction with campaign allocations to avoid double claims.
+      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1)`)
       // 1. Validar se o limite não estourou (proteção contra concorrência via transaction)
-      await checkMonthlyLimit(tx, consultorId, quantidade)
 
       // Opção B (sem coluna nicho em leads): não filtra no banco.
       // Seleciona leads que ainda não foram atribuídos a nenhuma lista.
@@ -287,6 +281,7 @@ export async function POST(req: Request) {
         where: {
           ...baseWhere,
           listaLeads: { none: {} },
+          blackFridayClaim: { is: null },
         },
         orderBy: { id: "asc" },
         take: quantidade,
@@ -298,6 +293,7 @@ export async function POST(req: Request) {
           where: {
             ...baseWhere,
             listaLeads: { none: {} },
+            blackFridayClaim: { is: null },
           },
         })
 
@@ -309,10 +305,17 @@ export async function POST(req: Request) {
         )
       }
 
+      await consumeConsultantMonthlyQuota(tx, {
+        crmUserId: consultantCrmId,
+        legacyConsultantIndex: consultorId,
+        quantity: leads.length,
+      })
+
       // 2. Criar a nova lista agora que sabemos exatamente quantos leads teremos
       const lista = await tx.lista.create({
         data: {
           consultorId,
+          crmConsultantId: consultantCrmId,
           nicho,
           quantidade: leads.length,
         },

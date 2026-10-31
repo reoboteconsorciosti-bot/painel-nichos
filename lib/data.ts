@@ -199,12 +199,14 @@ export interface SupervisorConfig {
   email: string
   password?: string
   role: "admin" | "supervisor"
+  isOwner?: boolean
 }
 
 export interface Consultant {
   id: string
   name: string
   supervisorId: string // Vincula o consultor ao ID do supervisor
+  crmUserId?: string
 }
 
 // As contas e senhas agora são importadas pelo lado do servidor em lib/server-users.ts

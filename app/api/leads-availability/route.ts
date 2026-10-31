@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
+import { getAuthenticatedUser } from "@/lib/auth"
+import { canViewGlobalLeadCounts } from "@/lib/lead-visibility"
 
 export const runtime = "nodejs"
 
@@ -32,6 +34,8 @@ function normalizeCity(input: string): string {
 }
 
 export async function POST(req: Request) {
+  const user = await getAuthenticatedUser(req)
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
   const body = (await req.json().catch(() => ({}))) as AvailabilityBody
 
   const estadoRaw = String(body.estado ?? "").trim()
@@ -47,6 +51,10 @@ export async function POST(req: Request) {
   }
 
   try {
+    if (!(await canViewGlobalLeadCounts(user))) {
+      return NextResponse.json({ ok: true, countsVisible: false, totalMatching: null, unassignedMatching: null, assignedMatching: null })
+    }
+
     const baseWhere = {
       ...buildNichoWhere(nicho),
       state: { equals: estado, mode: "insensitive" as const },
@@ -57,16 +65,18 @@ export async function POST(req: Request) {
         : {}),
     }
 
-    const totalMatching = await prisma.lead.count({ where: baseWhere })
+    const campaignEligibleWhere = { ...baseWhere, blackFridayClaim: { is: null } }
+    const totalMatching = await prisma.lead.count({ where: campaignEligibleWhere })
     const unassignedMatching = await prisma.lead.count({
       where: {
-        ...baseWhere,
+        ...campaignEligibleWhere,
         listaLeads: { none: {} },
       },
     })
 
     return NextResponse.json({
       ok: true,
+      countsVisible: true,
       nicho,
       estado,
       cidade,
