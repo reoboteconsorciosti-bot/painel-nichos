@@ -28,8 +28,8 @@ export function LocationSelector({
   const selectedEstado = ESTADOS.find((e) => e.sigla === selectedState)
 
   return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
-      <div className="flex flex-1 flex-col gap-2">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="flex min-w-0 flex-col gap-2">
         <label className="flex items-center gap-2 text-sm font-medium text-foreground">
           <MapPin className="size-4 text-primary" />
           Estado
@@ -38,7 +38,7 @@ export function LocationSelector({
           onStateChange(val)
           onCityChange("")
         }}>
-          <SelectTrigger className="w-full bg-secondary/50 border-border">
+          <SelectTrigger className="w-full min-w-0 bg-secondary/50 border-border">
             <SelectValue placeholder="Selecione o estado" />
           </SelectTrigger>
           <SelectContent>
@@ -54,13 +54,13 @@ export function LocationSelector({
         </Select>
       </div>
 
-      <div className="flex flex-1 flex-col gap-2">
+      <div className="flex min-w-0 flex-col gap-2">
         <label className="flex items-center gap-2 text-sm font-medium text-foreground">
           <Building2 className="size-4 text-primary" />
           Cidade
         </label>
         <Select value={selectedCity} onValueChange={onCityChange} disabled={!selectedState}>
-          <SelectTrigger className="w-full bg-secondary/50 border-border">
+          <SelectTrigger className="w-full min-w-0 bg-secondary/50 border-border">
             <SelectValue placeholder={selectedState ? "Selecione a cidade" : "Selecione um estado primeiro"} />
           </SelectTrigger>
           <SelectContent>

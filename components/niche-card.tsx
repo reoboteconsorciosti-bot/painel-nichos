@@ -21,7 +21,7 @@ export function NicheCard({ niche, selected, isEmpty = false, onSelect }: NicheC
       }}
       disabled={isEmpty}
       className={cn(
-        "group relative flex h-[280px] w-full flex-col justify-between overflow-hidden rounded-2xl bg-card p-6 text-left shadow-lg transition-all duration-300 ease-in-out",
+        "group relative flex min-h-[240px] w-full flex-col justify-between overflow-hidden rounded-2xl bg-card p-6 text-left shadow-lg transition-all duration-300 ease-in-out",
         isEmpty ? "cursor-not-allowed opacity-60 grayscale-[0.8]" : "cursor-pointer hover:-translate-y-1 hover:scale-[1.02] hover:shadow-2xl",
         "border border-border/40",
         selected && "ring-2 ring-primary border-transparent shadow-primary/20"
@@ -93,7 +93,7 @@ export function NicheCard({ niche, selected, isEmpty = false, onSelect }: NicheC
                     )
               )}
             >
-              {isEmpty ? "Sem dados" : "Selecionar nicho"}
+              {isEmpty ? "Sem dados" : "Gerar lista"}
             </span>
           </div>
         </div>

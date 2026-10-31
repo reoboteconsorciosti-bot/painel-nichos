@@ -272,14 +272,14 @@ export default function Page() {
     : null
 
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+    <div className="flex h-dvh bg-background text-foreground overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         onTabChange={handleTabChange}
         isAdmin={currentUser?.role === "admin"}
       />
       {/* Conteúdo Principal */}
-      <div className="flex-1 flex flex-col w-full h-screen overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         <DashboardHeader
           user={currentUser}
           onLogout={handleLogout}

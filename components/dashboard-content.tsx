@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Search, SlidersHorizontal, LayoutGrid, CalendarDays, Check, FileText } from "lucide-react"
+import { Search, SlidersHorizontal, LayoutGrid, Check, FileText } from "lucide-react"
 import { NICHES } from "@/lib/data"
 import type { Consultant } from "@/lib/data"
 import { Input } from "@/components/ui/input"
@@ -522,9 +522,6 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
             <span className="font-semibold text-foreground">{NICHES.length}</span> nichos disponiveis
           </span>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5">
-          <CalendarDays className="size-4 text-primary" />
-        </div>
       </div>
 
       {/* Timeline de agendamentos */}
@@ -544,10 +541,10 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
           </div>
           <div>
             <h2 className="text-base font-semibold text-foreground">
-              Escolha um Nicho
+              De qual nicho você precisa?
             </h2>
             <p className="text-xs text-muted-foreground">
-              Selecione o nicho desejado para prospectar e gerar sua lista
+              Escolha um nicho para gerar uma lista de contatos.
             </p>
           </div>
         </div>

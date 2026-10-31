@@ -1,452 +1,146 @@
-"use client"
+﻿"use client"
 
-import { useState, useEffect } from "react"
-import { NICHES } from "@/lib/data"
-import type { Consultant } from "@/lib/data"
+import { useEffect, useRef, useState, type FormEvent } from "react"
+import { NICHES, type Consultant } from "@/lib/data"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { LocationSelector } from "@/components/location-selector"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Check, ArrowRight, Plus, Zap } from "lucide-react"
-import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { ArrowRight, Loader2, Zap } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 
+type Availability = { total: number | null; available: number | null; used: number | null; countsVisible: boolean }
 interface NicheModalProps {
     isOpen: boolean
     onClose: () => void
     activeNicheId: string | null
     onGenerate: (nicheIds: string[], state: string, city: string, leadCount: number, consultantCrmId: string, consultantName: string, sendToCrm: boolean, crmOwnerId: string | null) => Promise<void>
-    onCheckAvailability: (nicheIds: string[], state: string, city: string) => Promise<{ total: number | null; available: number | null; used: number | null; countsVisible: boolean }>
+    onCheckAvailability: (nicheIds: string[], state: string, city: string) => Promise<Availability>
     consultants: Consultant[]
 }
 
-export function NicheModal({
-    isOpen,
-    onClose,
-    activeNicheId,
-    onGenerate,
-    onCheckAvailability,
-    consultants,
-}: NicheModalProps) {
-    const [selectedNiches, setSelectedNiches] = useState<string[]>([])
-    const [selectedState, setSelectedState] = useState("")
-    const [selectedCity, setSelectedCity] = useState("")
-    const [leadCount, setLeadCount] = useState<number | "">("")
-    const [consultantCrmId, setConsultantCrmId] = useState("")
-    const [isSubmitting, setIsSubmitting] = useState(false)
-    const [submitError, setSubmitError] = useState<string | null>(null)
-    const [noLeadsModalOpen, setNoLeadsModalOpen] = useState(false)
-    const [leadsInsufficientModalOpen, setLeadsInsufficientModalOpen] = useState(false)
+export function NicheModal({ isOpen, onClose, activeNicheId, onGenerate, onCheckAvailability, consultants }: NicheModalProps) {
+    const [state, setState] = useState("")
+    const [city, setCity] = useState("")
+    const [quantity, setQuantity] = useState("")
+    const [consultantId, setConsultantId] = useState("")
     const [sendToCrm, setSendToCrm] = useState(false)
+    const [submitting, setSubmitting] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+    const [availability, setAvailability] = useState<Availability | null>(null)
+    const [checking, setChecking] = useState(false)
+    const [availabilityError, setAvailabilityError] = useState(false)
+    const checkRef = useRef(onCheckAvailability)
+    checkRef.current = onCheckAvailability
 
-    interface CrmMember {
-        id: string;
-        name: string;
-        role: string;
-        team?: { name: string };
-        photoUrl?: string | null;
-    }
-
-    const [crmMembers, setCrmMembers] = useState<CrmMember[]>([])
-    const [crmMembersLoading, setCrmMembersLoading] = useState(false)
-    const [crmMembersFetched, setCrmMembersFetched] = useState(false)
-    const [crmOwnerId, setCrmOwnerId] = useState<string>("none")
-
-    const [availability, setAvailability] = useState<{ total: number | null; available: number | null; used: number | null; countsVisible: boolean } | null>(null)
-    const [availabilityLoading, setAvailabilityLoading] = useState(false)
-    const [availabilityError, setAvailabilityError] = useState<string | null>(null)
-
-    const resetForm = () => {
-        setSelectedState("")
-        setSelectedCity("")
-        setLeadCount("")
-        setConsultantCrmId("")
-        setAvailability(null)
-        setAvailabilityError(null)
+    useEffect(() => {
+        if (!isOpen) return
+        setState("")
+        setCity("")
+        setQuantity("")
+        setConsultantId("")
         setSendToCrm(false)
-        setCrmOwnerId("none")
-        setCrmMembersFetched(false)
-    }
-
-    // Fetch CRM members when sendToCrm is toggled on (fetch once)
-    useEffect(() => {
-        if (sendToCrm && !crmMembersFetched && !crmMembersLoading) {
-            setCrmMembersLoading(true)
-            fetch("/api/crm/members")
-                .then(r => r.json())
-                .then(d => {
-                    if (d.ok && d.members) {
-                        setCrmMembers(d.members)
-                    }
-                })
-                .catch(() => {})
-                .finally(() => {
-                    setCrmMembersLoading(false)
-                    setCrmMembersFetched(true)
-                })
-        }
-    }, [sendToCrm, crmMembersFetched, crmMembersLoading])
-
-    const validateForm = () => {
-        return selectedState !== "" && typeof leadCount === "number" && (leadCount as number) > 0 && consultantCrmId.trim() !== ""
-    }
-
-    // Reset state when modal opens
-    useEffect(() => {
-        if (isOpen) {
-            resetForm()
-            if (activeNicheId) {
-                setSelectedNiches([activeNicheId])
-            }
-        }
+        setError(null)
     }, [isOpen, activeNicheId])
 
-    const niche = NICHES.find((n) => n.id === activeNicheId)
+    useEffect(() => {
+        setAvailability(null)
+        setAvailabilityError(false)
+        if (!isOpen || !state || !activeNicheId) {
+            setChecking(false)
+            return
+        }
+        let cancelled = false
+        setChecking(true)
+        const timer = setTimeout(async () => {
+            try {
+                const result = await checkRef.current([activeNicheId], state, city)
+                if (!cancelled) setAvailability(result)
+            } catch {
+                if (!cancelled) setAvailabilityError(true)
+            } finally {
+                if (!cancelled) setChecking(false)
+            }
+        }, 300)
+        return () => { cancelled = true; clearTimeout(timer) }
+    }, [isOpen, activeNicheId, state, city])
+
+    const niche = NICHES.find(n => n.id === activeNicheId)
     if (!niche) return null
-
+    const consultant = consultants.find(c => c.crmUserId === consultantId)
+    const count = Number(quantity)
+    const validCount = Number.isSafeInteger(count) && count > 0
+    const exceedsAvailable = availability?.available != null && count > availability.available
+    const missing = !state ? "Selecione o estado." : !validCount ? "Informe uma quantidade inteira maior que zero." : !consultant ? "Selecione o consultor." : null
+    const ready = !missing && !exceedsAvailable && !checking
     const Icon = niche.icon
-    const isReady = validateForm()
 
-    const handleGenerate = async () => {
-        if (!isReady || typeof leadCount !== "number") return
-        setIsSubmitting(true)
-        setSubmitError(null)
+    async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault()
+        if (!ready || submitting || !consultant || !activeNicheId) return
+        setSubmitting(true)
+        setError(null)
         try {
-            // Se já sabemos a disponibilidade, bloqueia cedo.
-            if (availability && availability.available !== null && leadCount > availability.available) {
-                setLeadsInsufficientModalOpen(true)
-                return
-            }
-
-            // Se não consultou ainda, consulta rapidamente antes de criar lista.
-            if (!availability && selectedState && selectedNiches.length > 0) {
-                const res = await onCheckAvailability(selectedNiches, selectedState, selectedCity)
-                setAvailability(res)
-                if (res.available !== null && leadCount > res.available) {
-                    setLeadsInsufficientModalOpen(true)
-                    return
-                }
-            }
-
-            await onGenerate(
-                selectedNiches,
-                selectedState,
-                selectedCity,
-                leadCount,
-                consultantCrmId,
-                consultants.find((consultant) => consultant.crmUserId === consultantCrmId)?.name ?? "",
-                sendToCrm,
-                sendToCrm && crmOwnerId !== "none" ? crmOwnerId : null
-            )
+            const current = await checkRef.current([activeNicheId], state, city)
+            setAvailability(current)
+            if (current.available !== null && count > current.available) return
+            await onGenerate([activeNicheId], state, city, count, consultantId, consultant.name, sendToCrm, sendToCrm ? consultantId : null)
             onClose()
-        } catch (err) {
-            const raw = err instanceof Error ? err.message : "failed_to_create_list"
-            if (raw === "no_leads_available" || raw.startsWith("no_leads_available")) {
-                setNoLeadsModalOpen(true)
-                return
-            }
-            const friendly =
-                raw === "invalid_payload"
-                    ? "Verifique estado, cidade, consultor e quantidade."
-                    : raw === "failed_to_create_list"
-                        ? "Nao foi possivel criar a lista. Tente novamente."
-                        : raw
-            setSubmitError(friendly)
+        } catch (cause) {
+            const message = cause instanceof Error ? cause.message : ""
+            setError(message.startsWith("no_leads_available") ? "Não há contatos disponíveis nesta região. Escolha outra região." : message === "invalid_payload" ? "Confira a região, a quantidade e o consultor." : message && message !== "failed_to_create_list" ? message : "Não foi possível gerar a lista. Tente novamente.")
         } finally {
-            setIsSubmitting(false)
+            setSubmitting(false)
         }
     }
-
-    const handleCheckAvailability = async () => {
-        if (!selectedState || selectedNiches.length === 0) return
-        setAvailabilityLoading(true)
-        setAvailabilityError(null)
-        try {
-            const res = await onCheckAvailability(selectedNiches, selectedState, selectedCity)
-            setAvailability(res)
-        } catch (err) {
-            const raw = err instanceof Error ? err.message : "failed_to_check_availability"
-            setAvailabilityError(raw)
-        } finally {
-            setAvailabilityLoading(false)
-        }
-    }
-
-
 
     return (
-        <>
-            <AlertDialog open={noLeadsModalOpen} onOpenChange={setNoLeadsModalOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Aviso</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Não há médicos disponiveis nessa região
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogAction onClick={() => setNoLeadsModalOpen(false)}>
-                            Ok
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <AlertDialog open={leadsInsufficientModalOpen} onOpenChange={setLeadsInsufficientModalOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Leads Insuficientes</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            A quantidade solicitada é maior que os leads disponíveis no banco.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogAction onClick={() => setLeadsInsufficientModalOpen(false)}>
-                            Ok
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-                <DialogContent className="sm:max-w-[500px] p-0 overflow-hidden bg-card border-border">
-                {/* Banner with gradient */}
-                <div className={cn("h-24 w-full bg-gradient-to-br", niche.color)} />
-
-                <div className="px-6 pb-6 pt-0 relative">
-                    {/* Floating Icon */}
-                    <div className="absolute -top-10 left-6 flex h-16 w-16 items-center justify-center rounded-xl bg-card border border-border shadow-sm">
-                        <Icon className="size-8 text-foreground" />
-                    </div>
-
-                    <div className="mt-8 mb-6">
-                        <DialogHeader>
-                            <DialogTitle className="text-xl">{niche.label}</DialogTitle>
-                            <DialogDescription>{niche.description}</DialogDescription>
-                        </DialogHeader>
-                    </div>
-
-                    <div className="flex flex-col gap-6">
-                        {/* Location */}
-                        <div className="rounded-xl border border-border bg-secondary/20 p-4">
-                            <LocationSelector
-                                selectedState={selectedState}
-                                selectedCity={selectedCity}
-                                onStateChange={setSelectedState}
-                                onCityChange={setSelectedCity}
-                            />
-                        </div>
-
-                        {/* Lead Count */}
-                        <div className="flex flex-col gap-2 rounded-xl border border-border bg-secondary/20 p-4">
-                            <div className="flex items-center gap-2">
-                                <Check className="size-4 text-primary" />
-                                <span className="text-sm font-medium text-foreground">
-                                    Quantidade de leads
-                                </span>
+        <Dialog open={isOpen} onOpenChange={open => { if (!open && !submitting) onClose() }}>
+            <DialogContent className="flex flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]" showCloseButton={!submitting} onEscapeKeyDown={e => { if (submitting) e.preventDefault() }} onPointerDownOutside={e => { if (submitting) e.preventDefault() }}>
+                <DialogHeader className="shrink-0 border-b border-border p-5 pr-12 text-left">
+                    <div className="mb-2 flex items-center gap-2 text-sm text-primary"><Icon className="size-4" />{niche.label}</div>
+                    <DialogTitle className="text-xl">Gerar lista</DialogTitle>
+                    <DialogDescription>Escolha a região, a quantidade e quem vai receber.</DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+                    <fieldset disabled={submitting} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-5 disabled:opacity-70">
+                        <section className="space-y-3" aria-label="Região">
+                            <h3 className="text-sm font-semibold">1. Onde buscar?</h3>
+                            <LocationSelector selectedState={state} selectedCity={city} onStateChange={value => { setState(value); setCity(""); setError(null) }} onCityChange={value => { setCity(value); setError(null) }} />
+                            <p className="text-xs text-muted-foreground">Cidade opcional. Em branco, busca no estado inteiro.</p>
+                        </section>
+                        <section className="space-y-2">
+                            <label htmlFor="list-quantity" className="text-sm font-semibold">2. Quantos contatos?</label>
+                            <input id="list-quantity" type="number" inputMode="numeric" min={1} step={1} value={quantity} onChange={e => { setQuantity(e.target.value); setError(null) }} placeholder="Ex.: 50" aria-invalid={exceedsAvailable || (quantity !== "" && !validCount)} aria-describedby="list-availability" className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary" />
+                            <div id="list-availability" aria-live="polite" className="text-xs text-muted-foreground">
+                                {checking ? "Consultando contatos disponíveis..." : availability?.countsVisible ? <span><strong className="text-foreground">{availability.available?.toLocaleString("pt-BR") ?? "—"}</strong> contatos disponíveis nesta região.</span> : availabilityError ? "Não foi possível consultar agora. Tentaremos ao gerar a lista." : state ? "A disponibilidade será validada ao gerar." : "Selecione o estado para ver a disponibilidade."}
                             </div>
-                            <input
-                                type="number"
-                                inputMode="numeric"
-                                min={1}
-                                value={leadCount}
-                                onChange={(e) => {
-                                    const val = e.target.value
-                                    const next = val === "" ? "" : Number(val)
-                                    setLeadCount(next)
-                                    if (typeof next === "number" && availability && availability.available !== null && next > availability.available) {
-                                        setLeadsInsufficientModalOpen(true)
-                                    }
-                                }}
-                                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                                placeholder="Digite a quantidade de leads"
-                            />
-                            <p className="text-xs text-muted-foreground mt-1">
-                                Defina quantos contatos você quer processar.
-                            </p>
-                        </div>
-
-                        <div className="flex flex-col gap-2 rounded-xl border border-border bg-secondary/20 p-4">
-                            <div className="flex items-center gap-2">
-                                <Check className="size-4 text-primary" />
-                                <span className="text-sm font-medium text-foreground">
-                                    Leads no banco
-                                </span>
-                            </div>
-
-                            <div className="flex">
-                                <button
-                                    type="button"
-                                    onClick={handleCheckAvailability}
-                                    disabled={!selectedState || availabilityLoading}
-                                    className={cn(
-                                        "flex-1 h-10 rounded-md border text-sm font-semibold transition-all",
-                                        !selectedState || availabilityLoading
-                                            ? "cursor-not-allowed border-border bg-secondary text-muted-foreground opacity-60"
-                                            : "border-border bg-background hover:bg-secondary/40",
-                                    )}
-                                >
-                                    {availabilityLoading ? "Consultando..." : "Consultar"}
-                                </button>
-                            </div>
-
-                            {availability?.countsVisible && (
-                                <div className="mt-2">
-                                    <div className="text-sm text-muted-foreground">
-                                        Total no banco: <span className="font-semibold text-foreground">{availability.total}</span>
-                                    </div>
-                                    <div className="text-xs text-muted-foreground mt-1">
-                                        <div>Disponiveis agora: <span className="font-semibold text-foreground">{availability.available}</span></div>
-                                        <div>Usados em listas: <span className="font-semibold text-foreground">{availability.used}</span></div>
-                                    </div>
-                                </div>
-                            )}
-                            {availabilityError && (
-                                <p className="text-xs text-destructive mt-1">{availabilityError}</p>
-                            )}
-                            {availability && !availability.countsVisible && (
-                                <p className="text-xs text-muted-foreground mt-1">Os totais foram ocultados pelo proprietário; o servidor valida a quantidade solicitada.</p>
-                            )}
-                            <p className="text-xs text-muted-foreground mt-1">
-                                O total e a quantidade de leads existentes no banco. "Disponiveis agora" sao os que ainda nao foram usados em listas. Se a cidade estiver em branco, consulta o estado inteiro.
-                            </p>
-                        </div>
-                        <div className="flex flex-col gap-2 rounded-xl border border-border bg-secondary/20 p-3">
-                            <div className="flex items-center gap-2">
-                                <Check className="size-4 text-primary" />
-                                <span className="text-sm font-medium text-foreground">
-                                    Nome do Consultor
-                                </span>
-                            </div>
-                            <Select value={consultantCrmId} onValueChange={setConsultantCrmId}>
-                                <SelectTrigger className="w-full h-10 bg-background border-border">
-                                    <SelectValue placeholder="Selecione o consultor" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectGroup>
-                                        <SelectLabel>Equipe</SelectLabel>
-                                        {consultants.map((consultant) => (
-                                            <SelectItem key={consultant.crmUserId ?? consultant.id} value={consultant.crmUserId ?? ""}>
-                                                {consultant.name}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectGroup>
-                                </SelectContent>
+                            {exceedsAvailable && <p role="alert" className="text-xs text-destructive">{availability?.available === 0 ? "Sem contatos disponíveis. Escolha outra região." : `Escolha até ${availability?.available} contatos ou altere a região.`}</p>}
+                        </section>
+                        <section className="space-y-2">
+                            <label htmlFor="list-consultant" className="text-sm font-semibold">3. Para qual consultor?</label>
+                            <Select value={consultantId} onValueChange={value => { setConsultantId(value); setError(null) }} disabled={submitting}>
+                                <SelectTrigger id="list-consultant" className="h-10 w-full min-w-0 bg-background"><SelectValue placeholder="Selecione o consultor" /></SelectTrigger>
+                                <SelectContent>{consultants.filter(c => c.crmUserId).map(c => <SelectItem key={c.crmUserId} value={c.crmUserId!}>{c.name}</SelectItem>)}</SelectContent>
                             </Select>
-                            <span className="text-xs text-muted-foreground mt-1" >
-                                Defina para qual consultor essa lista será gerada.
-                            </span>
-
-
-                        </div>
-
-                        {/* CRM Toggle */}
-                        <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/20 px-4 py-3">
-                            <div className="flex flex-col gap-0.5">
-                                <div className="flex items-center gap-2">
-                                    <Zap className="size-4 text-amber-400" />
-                                    <span className="text-sm font-medium text-foreground">Enviar para o CRM</span>
-                                </div>
-                                <span className="text-xs text-muted-foreground pl-6">
-                                    {sendToCrm ? "Os leads serão enviados ao CRM após geração" : "Apenas gera a lista, sem envio externo"}
-                                </span>
+                            {consultants.filter(c => c.crmUserId).length === 0 && <p className="text-xs text-muted-foreground">Nenhum consultor disponível na equipe.</p>}
+                        </section>
+                        <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/20 p-3">
+                            <div className="min-w-0 space-y-1">
+                                <label htmlFor="list-crm" className="flex cursor-pointer items-center gap-2 text-sm font-semibold"><Zap className="size-4 text-primary" />Enviar ao CRM</label>
+                                <p className="text-xs text-muted-foreground">{sendToCrm ? consultant ? `Responsável: ${consultant.name}` : "O consultor escolhido será o responsável no CRM." : "Ative para entregar os contatos no CRM."}</p>
                             </div>
-                            <button
-                                type="button"
-                                role="switch"
-                                aria-checked={sendToCrm}
-                                onClick={() => setSendToCrm((v) => !v)}
-                                className={cn(
-                                    "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none",
-                                    sendToCrm ? "bg-amber-400" : "bg-secondary"
-                                )}
-                            >
-                                <span
-                                    className={cn(
-                                        "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-200",
-                                        sendToCrm ? "translate-x-5" : "translate-x-0"
-                                    )}
-                                />
-                            </button>
+                            <Switch id="list-crm" checked={sendToCrm} onCheckedChange={setSendToCrm} disabled={submitting} />
                         </div>
-
-                        {/* CRM Selection Dropdown */}
-                        {sendToCrm && (
-                            <div className="flex flex-col gap-2 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3">
-                                <div className="flex items-center gap-2">
-                                    <Zap className="size-4 text-amber-500" />
-                                    <span className="text-sm font-medium text-foreground">
-                                        Responsável no CRM (Opcional)
-                                    </span>
-                                </div>
-                                <Select value={crmOwnerId} onValueChange={setCrmOwnerId}>
-                                    <SelectTrigger className="w-full h-10 bg-background border-border" disabled={crmMembersLoading}>
-                                        <SelectValue placeholder={crmMembersLoading ? "Carregando membros..." : "Nenhum responsável atribuído"} />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectGroup>
-                                            <SelectLabel>Membros do CRM</SelectLabel>
-                                            <SelectItem value="none" className="italic text-muted-foreground">Sem responsável</SelectItem>
-                                            {crmMembers.map((m) => (
-                                                <SelectItem key={m.id} value={m.id}>
-                                                    <div className="flex items-center gap-2">
-                                                        {m.photoUrl && <img src={m.photoUrl} alt="" className="size-5 rounded-full object-cover" />}
-                                                        <span>{m.name}</span>
-                                                        <span className="text-[10px] text-muted-foreground uppercase bg-secondary px-1.5 py-0.5 rounded-sm">{m.role}</span>
-                                                    </div>
-                                                </SelectItem>
-                                            ))}
-                                        </SelectGroup>
-                                    </SelectContent>
-                                </Select>
-                                <span className="text-xs text-muted-foreground mt-1">
-                                    Selecione quem será o dono desses contatos no CRM. Se não selecionar, os leads cairão sem responsável.
-                                </span>
-                            </div>
-                        )}
-
-                        {/* Generate Button */}
-                        <button
-                            onClick={handleGenerate}
-                            disabled={!isReady || isSubmitting}
-                            className={cn(
-                                "mt-2 flex w-full items-center justify-center gap-2 rounded-lg px-6 py-3 text-sm font-semibold transition-all duration-200",
-                                isReady && !isSubmitting
-                                    ? sendToCrm
-                                        ? "bg-amber-400 text-black hover:brightness-110 active:scale-[0.98]"
-                                        : "bg-primary text-primary-foreground hover:brightness-110 active:scale-[0.98]"
-                                    : "cursor-not-allowed bg-secondary text-muted-foreground opacity-60"
-                            )}
-                        >
-                            {isSubmitting ? (
-                                sendToCrm ? "Criando e enviando ao CRM..." : "Criando..."
-                            ) : isReady ? (
-                                <>
-                                    {sendToCrm ? <Zap className="size-4" /> : <Plus className="size-4" />}
-                                    {sendToCrm ? "Criar e Enviar ao CRM" : "Criar Lista"}
-                                    <ArrowRight className="size-4" />
-                                </>
-                            ) : (
-                                selectedState !== "" && selectedCity.trim() === "" ? "Selecione a cidade" : "Preencha a localizacao"
-                            )}
+                    </fieldset>
+                    <div className="shrink-0 space-y-2 border-t border-border bg-card p-4">
+                        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+                        <p id="list-next-step" aria-live="polite" className="text-xs text-muted-foreground">{submitting ? "Aguarde a conclusão para evitar duplicar a lista." : missing ?? (checking ? "Consultando disponibilidade..." : exceedsAvailable ? "Ajuste a quantidade ou a região." : `${count} contatos para ${consultant?.name}${sendToCrm ? " • Envio ao CRM" : ""}`)}</p>
+                        <button type="submit" disabled={!ready || submitting} aria-describedby="list-next-step" className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+                            {submitting ? <><Loader2 className="size-4 animate-spin" />{sendToCrm ? "Gerando e enviando..." : "Gerando lista..."}</> : <>{sendToCrm ? "Gerar e enviar ao CRM" : "Gerar lista"}<ArrowRight className="size-4" /></>}
                         </button>
-                        {submitError && (
-                            <p className="mt-2 text-xs text-destructive">
-                                {submitError}
-                            </p>
-                        )}
                     </div>
-                </div>
-                </DialogContent>
-            </Dialog>
-        </>
+                </form>
+            </DialogContent>
+        </Dialog>
     )
 }
