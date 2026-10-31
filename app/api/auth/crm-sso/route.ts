@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server"
-import { establishCRMSSOSession } from "@/lib/crm-sso"
+import { establishCRMSSOSession, getPanelRedirectUrl } from "@/lib/crm-sso"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 function loginError(req: Request, error: string) {
-  const response = NextResponse.redirect(new URL(`/?sso_error=${encodeURIComponent(error)}`, req.url))
+  const target = getPanelRedirectUrl(req, "/")
+  target.searchParams.set("sso_error", error)
+  const response = NextResponse.redirect(target)
   response.headers.set("Cache-Control", "no-store, max-age=0")
   response.headers.set("Referrer-Policy", "no-referrer")
   return response
@@ -23,7 +25,7 @@ export async function GET(req: Request) {
       return loginError(req, result.error ?? "unauthorized")
     }
 
-    const response = NextResponse.redirect(new URL("/", req.url))
+    const response = NextResponse.redirect(getPanelRedirectUrl(req, "/"))
     response.headers.set("Set-Cookie", result.cookie)
     response.headers.set("Cache-Control", "no-store, max-age=0")
     response.headers.set("Referrer-Policy", "no-referrer")

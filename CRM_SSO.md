@@ -7,6 +7,7 @@ Configure estas variáveis somente no ambiente do servidor do Painel de Nichos:
 - `CRM_API_URL`: URL base do CRM, sem barra no final.
 - `CRM_API_KEY`: chave usada pelo painel para consultar `/api/v1/members`.
 - `PAINEL_NICHOS_SSO_SECRET`: segredo HMAC exclusivo para a integração com o Painel de Nichos. Configure o mesmo valor no CRM, sem usar prefixo `NEXT_PUBLIC_` ou enviá-lo ao navegador.
+- `PAINEL_NICHOS_PUBLIC_URL`: URL pública canônica do painel, por exemplo `https://painelnichos.reoboteconsorcios.com.br`. Use HTTPS e configure essa variável no ambiente do Painel de Nichos para os redirecionamentos não usarem o hostname interno do container.
 - `JWT_SECRET`: segredo local usado para assinar a sessão do painel.
 
 As variáveis existentes do simulador `SIMULADOR_URL` e `SIMULADOR_SSO_SECRET` devem permanecer inalteradas. No CRM, crie configurações separadas:
@@ -20,7 +21,7 @@ O botão **Entrar com o CRM** chama `GET /api/painel-nichos-sso`. Essa rota deve
 ${PAINEL_NICHOS_URL}/api/auth/crm-sso?crm_sso_token=<token>
 ```
 
-O token deve usar HMAC-SHA256 com `PAINEL_NICHOS_SSO_SECRET`, validade maxima de 60 segundos e payload com `aud: "painel-nichos"`, `userId`, `email`, `name`, `organizationId`, `iat` e `exp`. O callback valida assinatura, audiencia, validade e situacao/perfil atual do usuario consultado em `/api/v1/members`. Somente `OWNER` recebe perfil de administrador; supervisores ativos de `SALES` recebem acesso a propria equipe. `MANAGER` e `MEMBER` nao recebem sessao administrativa; membros `MEMBER` aparecem como consultores da equipe.
+O token deve usar HMAC-SHA256 com `PAINEL_NICHOS_SSO_SECRET`, validade maxima de 60 segundos e payload com `aud: "painel-nichos"`, `userId`, `email`, `name`, `organizationId`, `iat` e `exp`. O callback valida assinatura, audiencia, validade e situacao/perfil atual do usuario consultado em `/api/v1/members`. Somente `OWNER` recebe perfil de administrador; supervisores ativos de vendas recebem acesso a propria equipe. O painel aceita as áreas `VENDAS`/`ADMINISTRATIVO` e seus equivalentes `SALES`/`ADMINISTRATIVE`. `MANAGER` e `MEMBER` nao recebem sessao administrativa; membros `MEMBER` aparecem como consultores da equipe.
 
 Para implementar a parte do CRM, peça ao Gemini:
 

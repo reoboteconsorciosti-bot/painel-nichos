@@ -51,7 +51,28 @@ export async function establishCRMSSOSession(token: string): Promise<{ user: { i
 
   const members = await getCRMMembers()
   const member = members.find((candidate) => candidate.id === payload.userId)
-  if (!member || !member.active || (member.role !== "OWNER" && member.area !== "SALES") || member.email.toLowerCase() !== payload.email.toLowerCase()) {
+  if (!member) {
+    console.warn("[CRM_SSO] Member authorization rejected", {
+      reason: "member_not_found_in_api_roster",
+      userId: payload.userId,
+    })
+    return { user: null, cookie: null, error: "crm_user_not_authorized" }
+  }
+
+  const emailMatches = member.email.trim().toLowerCase() === payload.email.trim().toLowerCase()
+  let authorizationFailure: string | null = null
+  if (!member.active) authorizationFailure = "member_inactive"
+  else if (member.role !== "OWNER" && member.area !== "SALES") authorizationFailure = "area_not_authorized"
+  else if (!emailMatches) authorizationFailure = "email_mismatch"
+
+  if (authorizationFailure) {
+    console.warn("[CRM_SSO] Member authorization rejected", {
+      reason: authorizationFailure,
+      userId: payload.userId,
+      memberRole: member.role,
+      memberArea: member.area,
+      memberActive: member.active,
+    })
     return { user: null, cookie: null, error: "crm_user_not_authorized" }
   }
 
@@ -88,4 +109,18 @@ export async function establishCRMSSOSession(token: string): Promise<{ user: { i
 export function getCRMSSOStartUrl(): string | null {
   const crmUrl = (process.env.CRM_API_URL ?? "").trim().replace(/\/+$/, "")
   return crmUrl ? `${crmUrl}/api/painel-nichos-sso` : null
+}
+
+export function getPanelRedirectUrl(req: Request, path: string): URL {
+  const configuredUrl = process.env.PAINEL_NICHOS_PUBLIC_URL?.trim()
+  const baseUrl = configuredUrl ? new URL(configuredUrl) : new URL(req.url)
+
+  if (baseUrl.protocol !== "https:" && process.env.NODE_ENV === "production") {
+    throw new Error("PAINEL_NICHOS_PUBLIC_URL must use HTTPS in production")
+  }
+
+  baseUrl.pathname = "/"
+  baseUrl.search = ""
+  baseUrl.hash = ""
+  return new URL(path, baseUrl)
 }

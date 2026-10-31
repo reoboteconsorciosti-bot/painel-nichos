@@ -11,6 +11,14 @@ export type CRMMember = {
   team: { id: string; name: string; leaderId: string | null } | null
 }
 
+function normalizeArea(value: unknown): CRMMember["area"] | null {
+  if (typeof value !== "string") return null
+  const normalized = value.trim().toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  if (normalized === "SALES" || normalized === "VENDAS") return "SALES"
+  if (["ADMINISTRATIVE", "ADMINISTRATIVO", "ADMINISTRATIVA"].includes(normalized)) return "ADMINISTRATIVE"
+  return null
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
@@ -18,12 +26,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseMember(value: unknown): CRMMember | null {
   if (!isRecord(value)) return null
   const role = value.role
-  const area = value.area
+  const area = normalizeArea(value.area)
   if (
     typeof value.id !== "string" || !value.id || typeof value.name !== "string" ||
     typeof value.email !== "string" || typeof value.active !== "boolean" ||
     !["OWNER", "MANAGER", "SUPERVISOR", "MEMBER"].includes(String(role)) ||
-    !["SALES", "ADMINISTRATIVE"].includes(String(area))
+    !area
   ) return null
 
   const rawTeam = value.team
@@ -41,7 +49,7 @@ function parseMember(value: unknown): CRMMember | null {
     name: value.name,
     email: value.email,
     role: role as CRMMember["role"],
-    area: area as CRMMember["area"],
+    area,
     active: value.active,
     teamId: typeof value.teamId === "string" ? value.teamId : null,
     team,
