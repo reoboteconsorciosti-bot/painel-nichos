@@ -1,3 +1,4 @@
+import { buildCrmDelivery } from "@/lib/crm-delivery-payload"
 import { NextResponse } from "next/server"
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
@@ -22,79 +23,6 @@ async function getActiveCampaign() {
 
 function noAccess() {
   return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
-}
-
-function toCRMPhone(phone: string | null): string | undefined {
-  const value = String(phone ?? "").trim()
-  return value || undefined
-}
-
-async function sendToCRM(
-  leads: Array<{ id: number; name: string | null; phone: string | null; city: string | null; state: string | null; company: string | null; fantasy: string | null }>,
-  details: { campaignName: string; consultantName: string; supervisorName: string; assignedAt: Date; ownerId: string | null },
-) {
-  const crmUrl = (process.env.CRM_API_URL ?? "").trim().replace(/\/+$/, "")
-  const crmKey = (process.env.CRM_API_KEY ?? "").trim()
-  if (!crmUrl || !crmKey) return { configured: false, createdCount: 0, ignoredCount: 0, warnings: ["CRM_NOT_CONFIGURED"] }
-
-  let createdCount = 0
-  let ignoredCount = 0
-  const warnings: string[] = []
-  const source = `Painel Nichos - ${details.campaignName}`
-  const releasedAt = details.assignedAt.toLocaleString("pt-BR", { timeZone: "America/Cuiaba" })
-  let nextLeadIndex = 0
-
-  const createDeals = async () => {
-    while (nextLeadIndex < leads.length) {
-      const lead = leads[nextLeadIndex++]
-      if (!lead?.name) {
-        ignoredCount += 1
-        warnings.push(`Lead ${lead?.id ?? "sem id"}: nome ausente; negócio não criado.`)
-        continue
-      }
-
-      const contact = {
-        name: lead.name,
-        ...(toCRMPhone(lead.phone) ? { phone: toCRMPhone(lead.phone), whatsapp: toCRMPhone(lead.phone) } : {}),
-        ...(lead.city ? { city: lead.city } : {}),
-        ...(lead.state ? { state: lead.state } : {}),
-        ...(lead.company || lead.fantasy ? { company: lead.company || lead.fantasy || undefined } : {}),
-        source,
-        ...(details.ownerId ? { ownerId: details.ownerId } : {}),
-      }
-      const description = [
-        `Campanha: ${details.campaignName}`,
-        `Consultor: ${details.consultantName}`,
-        `Supervisor: ${details.supervisorName}`,
-        `Liberado em: ${releasedAt}`,
-      ].join("\n")
-
-      try {
-        const response = await fetch(`${crmUrl}/api/v1/deals`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${crmKey}` },
-          body: JSON.stringify({ contact, description, source, ...(details.ownerId ? { ownerId: details.ownerId } : {}) }),
-          signal: AbortSignal.timeout(20_000),
-        })
-        const data = (await response.json().catch(() => null)) as any
-        if (!response.ok || data?.success !== true || !data?.data?.id) {
-          ignoredCount += 1
-          warnings.push(`Lead ${lead.id}: ${data?.error || `CRM_HTTP_${response.status}`}`)
-          if (Array.isArray(data?.data?.warnings)) warnings.push(...data.data.warnings.map(String))
-          continue
-        }
-
-        createdCount += 1
-        if (Array.isArray(data.data.warnings)) warnings.push(...data.data.warnings.map(String))
-      } catch (error) {
-        ignoredCount += 1
-        warnings.push(`Lead ${lead.id}: ${error instanceof Error && error.name === "TimeoutError" ? "CRM_TIMEOUT" : "CRM_CONNECTION_FAILED"}`)
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(8, leads.length) }, () => createDeals()))
-  return { configured: true, createdCount, ignoredCount, warnings: [...new Set(warnings)].slice(0, 50) }
 }
 
 export async function GET(req: Request) {
@@ -150,7 +78,6 @@ export async function POST(req: Request) {
   const consultantId = String(body.consultantId ?? "").trim()
   const quantity = Number(body.quantity)
   const sendCRM = body.sendToCrm === true
-  const crmOwnerId = body.crmOwnerId ? String(body.crmOwnerId).trim() : null
 
   if (!consultantId || !Number.isSafeInteger(quantity) || quantity < 1) {
     return NextResponse.json({ ok: false, error: "invalid_payload" }, { status: 400 })
@@ -199,32 +126,31 @@ export async function POST(req: Request) {
         })),
       })
 
+      if (sendCRM) {
+        const ownerId = allowedConsultants.find(entry => entry.id === consultant.id)!.crmUserId
+        const deliveries = leads.map(lead => {
+          const description = lead.crmDealId ? lead.dealDescription : [
+            'Campanha: ' + campaign.name,
+            'Consultor: ' + consultant.name,
+            'Supervisor: ' + user.name,
+            'Liberado em: ' + assignedAt.toLocaleString('pt-BR', { timeZone: 'America/Cuiaba' }),
+            lead.dealDescription,
+          ].filter(Boolean).join('\n')
+          const delivery = buildCrmDelivery({ ...lead, dealDescription: description }, campaign.nicho, ownerId)
+          return delivery ? { leadId: lead.id, consultantCrmId: ownerId, ...delivery } : null
+        }).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+        if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
+      }
       return { consultant, leads, assignedAt }
     })
 
-    let crmResult: Awaited<ReturnType<typeof sendToCRM>> | null = null
-    if (sendCRM) {
-      try {
-        crmResult = await sendToCRM(created.leads, {
-          campaignName: campaign.name,
-          consultantName: created.consultant.name,
-          supervisorName: user.name,
-          assignedAt: created.assignedAt,
-          ownerId: crmOwnerId,
-        })
-        await prisma.blackFridayLead.updateMany({
-          where: { leadId: { in: created.leads.map((lead) => lead.id) } },
-          data: { crmStatus: !crmResult.configured || crmResult.createdCount === 0 ? "error" : crmResult.ignoredCount > 0 || crmResult.warnings.length > 0 ? "partial" : "sent" },
-        })
-      } catch (error) {
-        console.error("[BLACK_FRIDAY] CRM delivery failed", error)
-        crmResult = { configured: true, createdCount: 0, ignoredCount: created.leads.length, warnings: ["CRM_SEND_FAILED"] }
-        await prisma.blackFridayLead.updateMany({
-          where: { leadId: { in: created.leads.map((lead) => lead.id) } },
-          data: { crmStatus: "error" },
-        })
-      }
-    }
+    const crmResult = sendCRM ? {
+      configured: !!(process.env.CRM_API_URL?.trim() && process.env.CRM_API_KEY?.trim()),
+      queuedCount: await prisma.crmDelivery.count({ where: { leadId: { in: created.leads.map(lead => lead.id) }, status: { in: ['pending', 'sending'] } } }),
+      createdCount: 0,
+      ignoredCount: 0,
+      warnings: [],
+    } : null
 
     return NextResponse.json({
       ok: true,

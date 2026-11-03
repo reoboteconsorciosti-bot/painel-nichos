@@ -4,6 +4,7 @@ import { Prisma, type Prisma as PrismaType } from "@prisma/client"
 import { getAuthenticatedUser } from "@/lib/auth"
 import { syncCRMConsultants } from "@/lib/crm-members"
 import { consumeConsultantMonthlyQuota } from "@/lib/consultant-quotas"
+import { buildCrmDelivery, type CrmLead } from "@/lib/crm-delivery-payload"
 
 export const runtime = "nodejs"
 
@@ -131,13 +132,16 @@ type CrmContact = {
   company?: string
   source?: string
   ownerId?: string
+  email?: string
+  jobTitle?: string
 }
 
 async function pushLeadsToCRM(
-  leads: Array<{ name: string | null; phone: string | null; city: string | null; state: string | null; company: string | null; fantasy: string | null }>,
+  leads: CrmLead[],
   nicho: string,
   ownerId: string | null,
 ): Promise<{ warnings: string[]; createdCount: number; ignoredCount: number }> {
+  if (!leads.length) return { warnings: [], createdCount: 0, ignoredCount: 0 }
   const crmUrl = (process.env.CRM_API_URL ?? "").trim().replace(/\/+$/, "")
   const crmKey = (process.env.CRM_API_KEY ?? "").trim()
   const allWarnings: string[] = []
@@ -153,6 +157,8 @@ async function pushLeadsToCRM(
     .filter((l) => l.name) // nome é obrigatório pelo CRM
     .map((l) => ({
       name: l.name ?? "",
+      ...(l.email ? { email: l.email } : {}),
+      ...(l.jobTitle ? { jobTitle: l.jobTitle } : {}),
       ...(l.phone ? { whatsapp: l.phone } : {}),
       ...(l.city ? { city: l.city } : {}),
       ...(l.state ? { state: l.state } : {}),
@@ -329,6 +335,13 @@ export async function POST(req: Request) {
         skipDuplicates: true,
       })
 
+      if (enviarParaCrm) {
+        const deliveries = leads.flatMap(lead => {
+          const delivery = buildCrmDelivery(lead, nicho, consultantCrmId)
+          return delivery ? [{ leadId: lead.id, listaId: lista.id, consultantCrmId, ...delivery }] : []
+        })
+        if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
+      }
       return { lista, leads }
     })
 
@@ -353,9 +366,10 @@ export async function POST(req: Request) {
     let crmWarnings: string[] = []
     let crmCreatedCount: number = 0
     let crmIgnoredCount: number = 0
+    const crmQueuedCount = enviarParaCrm ? await prisma.crmDelivery.count({ where: { listaId: result.lista.id, status: { in: ["pending", "sending"] } } }) : 0
     if (enviarParaCrm) {
       try {
-        const crmResult = await pushLeadsToCRM(result.leads, nicho, crmOwnerIdRaw)
+        const crmResult = await pushLeadsToCRM(result.leads.filter(lead => !lead.dealDescription?.trim()), nicho, crmOwnerIdRaw || consultantCrmId)
         crmWarnings = crmResult.warnings
         crmCreatedCount = crmResult.createdCount
         crmIgnoredCount = crmResult.ignoredCount
@@ -364,7 +378,7 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true, ...result, crmWarnings, crmCreatedCount, crmIgnoredCount })
+    return NextResponse.json({ ok: true, ...result, crmWarnings, crmCreatedCount, crmIgnoredCount, crmQueuedCount })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
 

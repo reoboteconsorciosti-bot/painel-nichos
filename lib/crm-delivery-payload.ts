@@ -1,0 +1,51 @@
+export type CrmLead = {
+  id: number
+  name: string | null
+  phone: string | null
+  city: string | null
+  state: string | null
+  company: string | null
+  fantasy: string | null
+  email?: string | null
+  jobTitle?: string | null
+  dealDescription?: string | null
+  crmDealId?: string | null
+}
+
+export function buildCrmDelivery(lead: CrmLead, nicho: string, ownerId: string) {
+  const description = lead.dealDescription?.trim()
+  if (!description) return null
+  if (lead.crmDealId) {
+    if (description.length > 2000) throw new Error("A nota do negócio excede 2.000 caracteres.")
+    return { method: "PATCH", crmDealId: lead.crmDealId, payload: { note: description } }
+  }
+  if (!lead.name?.trim()) throw new Error("O contato precisa ter nome para criar um negócio no CRM.")
+  const source = `Painel Nichos - ${nicho}`
+  return {
+    method: "POST",
+    crmDealId: null,
+    payload: {
+      contact: {
+        name: lead.name,
+        ...(lead.phone ? { whatsapp: lead.phone } : {}),
+        ...(lead.email ? { email: lead.email } : {}),
+        ...(lead.jobTitle ? { jobTitle: lead.jobTitle } : {}),
+        ...(lead.city ? { city: lead.city } : {}),
+        ...(lead.state ? { state: lead.state } : {}),
+        ...(lead.company || lead.fantasy ? { company: lead.company || lead.fantasy } : {}),
+        ownerId,
+        source,
+      },
+      ownerId,
+      description,
+      source,
+    },
+  }
+}
+
+export function retryDelay(response: Pick<Response, "headers">): number {
+  const raw = response.headers.get("Retry-After")
+  if (!raw) return 60_000
+  const seconds = Number(raw)
+  return Math.max(2200, Number.isFinite(seconds) ? seconds * 1000 : (Date.parse(raw) || Date.now() + 60_000) - Date.now())
+}

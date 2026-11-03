@@ -99,6 +99,8 @@ export function SuccessDialog({
           </div>
         </div>
 
+        {!!entry.crmQueuedCount && <p className="rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">{entry.crmQueuedCount} negócios na fila do CRM. Acompanhe os envios no painel; eles continuam em segundo plano.</p>}
+
         {(entry.crmCreatedCount !== undefined || entry.crmIgnoredCount !== undefined || (entry.crmWarnings && entry.crmWarnings.length > 0)) && (
           <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-4">
             <div className="flex items-center gap-2 text-amber-600 mb-2 dark:text-amber-500">

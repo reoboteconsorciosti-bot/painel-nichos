@@ -33,6 +33,9 @@ export async function GET(req: Request) {
         crmUserId: consultant.crmUserId,
         name: consultant.name,
         supervisorId: consultant.supervisorId,
+        supervisorName: consultant.supervisorName,
+        teamId: consultant.teamId,
+        teamName: consultant.teamName,
         ...(usageById.get(consultant.crmUserId) ?? { used: 0, monthlyLimit: 300 }),
       })),
     })

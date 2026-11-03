@@ -18,6 +18,11 @@ type NormalizedLead = {
   estado: string | null
   nicho: string
   origem_arquivo: string
+  email?: string
+  jobTitle?: string
+  dealDescription?: string
+  crmDealId?: string
+  fantasy?: string
 }
 
 type DbLeadInput = {
@@ -28,6 +33,10 @@ type DbLeadInput = {
   state?: string
   company?: string
   fantasy?: string
+  email?: string
+  jobTitle?: string
+  dealDescription?: string
+  crmDealId?: string
 }
 
 type EtlStats = {
@@ -272,6 +281,9 @@ type StandardRow = {
   company?: unknown
   fantasy?: unknown
   email?: unknown
+  jobTitle?: unknown
+  dealDescription?: unknown
+  crmDealId?: unknown
   ddd1?: unknown
   phone1?: unknown
   ddd2?: unknown
@@ -282,6 +294,12 @@ type StandardRow = {
 type StandardFieldKey = Exclude<keyof StandardRow, "phones">
 
 const HEADER_EQUIV: Record<string, StandardFieldKey> = {
+  jobtitle: "jobTitle",
+  dealdescription: "dealDescription",
+  crmdealid: "crmDealId",
+  state: "state",
+  company: "company",
+  fantasy: "fantasy",
   // name
   nome: "name",
   name: "name",
@@ -700,6 +718,11 @@ function normalizeRow(
       estado,
       nicho,
       origem_arquivo: origemArquivo,
+      email: normalizeText(mapped.email) || undefined,
+      jobTitle: normalizeText(mapped.jobTitle) || undefined,
+      dealDescription: normalizeText(mapped.dealDescription) || undefined,
+      crmDealId: normalizeText(mapped.crmDealId) || undefined,
+      fantasy: normalizeText(mapped.fantasy) || undefined,
     },
   }
 }
@@ -824,7 +847,11 @@ async function upsertBatchPrisma(
     city: toOptionalNonEmptyString(l.cidade),
     state: toOptionalNonEmptyString(l.estado),
     company: toOptionalNonEmptyString(l.razao_social),
-    fantasy: undefined,
+    fantasy: l.fantasy,
+    email: l.email,
+    jobTitle: l.jobTitle,
+    dealDescription: l.dealDescription,
+    crmDealId: l.crmDealId,
   }))
 
   // Uploads da interface preservam a primeira ocorrência do telefone no arquivo.
@@ -871,6 +898,10 @@ async function upsertBatchPrisma(
         state: i.state ?? null,
         company: i.company ?? null,
         fantasy: i.fantasy ?? null,
+        email: i.email ?? null,
+        jobTitle: i.jobTitle ?? null,
+        dealDescription: i.dealDescription ?? null,
+        crmDealId: i.crmDealId ?? null,
       })),
       skipDuplicates: true,
     })
@@ -885,6 +916,10 @@ async function upsertBatchPrisma(
       ...(i.state ? { state: i.state } : {}),
       ...(i.company ? { company: i.company } : {}),
       ...(i.fantasy ? { fantasy: i.fantasy } : {}),
+      ...(i.email ? { email: i.email } : {}),
+      ...(i.jobTitle ? { jobTitle: i.jobTitle } : {}),
+      ...(i.dealDescription ? { dealDescription: i.dealDescription } : {}),
+      ...(i.crmDealId ? { crmDealId: i.crmDealId } : {}),
     }
 
     if (Object.keys(data).length === 0) continue

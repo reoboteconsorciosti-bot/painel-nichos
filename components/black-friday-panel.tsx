@@ -21,8 +21,6 @@ type CampaignData = {
   }>
 }
 
-type CrmMember = { id: string; name: string; active?: boolean }
-
 export function BlackFridayPanel() {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState<CampaignData | null>(null)
@@ -30,17 +28,13 @@ export function BlackFridayPanel() {
   const [selectedConsultant, setSelectedConsultant] = useState("")
   const [quantity, setQuantity] = useState("")
   const [sendToCrm, setSendToCrm] = useState(true)
-  const [crmOwnerId, setCrmOwnerId] = useState("")
-  const [crmMembers, setCrmMembers] = useState<CrmMember[]>([])
-  const [crmMembersFetched, setCrmMembersFetched] = useState(false)
-  const [crmLoading, setCrmLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
-  const [crmError, setCrmError] = useState("")
   const [notice, setNotice] = useState("")
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    setError("")
     try {
       const response = await fetch("/api/black-friday", { credentials: "include", cache: "no-store" })
       const result = await response.json()
@@ -54,30 +48,6 @@ export function BlackFridayPanel() {
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
-
-  useEffect(() => {
-    if (!open || !sendToCrm || crmMembersFetched || crmLoading) return
-    setCrmLoading(true)
-    fetch("/api/crm/members", { credentials: "include", cache: "no-store" })
-      .then(async (response) => {
-        const result = await response.json()
-        if (!response.ok || !result.ok) {
-          const code = String(result.error ?? "CRM_ERROR")
-          const status = result.crmStatus ? ` (HTTP ${result.crmStatus})` : ""
-          const messages: Record<string, string> = {
-            CRM_NOT_CONFIGURED: "O CRM não está configurado no servidor.",
-            FALHA_FETCH_CRM: `O CRM recusou a consulta dos usuários${status}. Verifique a chave de API e a rota /api/v1/members.`,
-            RESPOSTA_CRM_INVALIDA: "O CRM respondeu, mas o formato não contém success e data.members como o painel espera.",
-            CRM_CONNECTION_FAILED: "Não foi possível conectar ao CRM. Confira se o serviço está acessível.",
-            unauthorized: "Sua sessão expirou. Entre novamente no painel.",
-          }
-          throw new Error(messages[code] ?? `Falha ao carregar usuários do CRM (${code}${status}).`)
-        }
-        setCrmMembers(Array.isArray(result.members) ? result.members : [])
-      })
-      .catch((loadError) => setCrmError(loadError instanceof Error ? loadError.message : "Falha ao carregar o CRM."))
-      .finally(() => { setCrmLoading(false); setCrmMembersFetched(true) })
-  }, [open, sendToCrm, crmMembersFetched, crmLoading])
 
   const maxQuantity = data?.available ?? null
   const formattedDate = useMemo(() => {
@@ -107,15 +77,14 @@ export function BlackFridayPanel() {
           consultantId: selectedConsultant,
           quantity: numericQuantity,
           sendToCrm,
-          crmOwnerId: sendToCrm ? crmOwnerId || null : null,
         }),
       })
       const result = await response.json()
       if (!response.ok || !result.ok) throw new Error(result.error === "no_leads_available" ? "Não há mais leads disponíveis." : result.error ?? "Falha ao liberar os leads.")
-      const crm = result.crm as { configured?: boolean; createdCount?: number; ignoredCount?: number; warnings?: string[] } | null
+      const crm = result.crm as { configured?: boolean; queuedCount?: number; createdCount?: number; ignoredCount?: number; warnings?: string[] } | null
       setNotice(sendToCrm
         ? crm?.configured
-          ? `${result.leads.length} leads liberados. ${crm.createdCount ?? 0} negócios criados no CRM e ${crm.ignoredCount ?? 0} não criados.${crm.warnings?.length ? ` Aviso: ${crm.warnings.join(", ")}` : ""}`
+          ? crm.queuedCount ? `${result.leads.length} leads liberados. ${crm.queuedCount} envios na fila do CRM. Acompanhe no painel.` : `${result.leads.length} leads liberados. ${crm.createdCount ?? 0} negócios criados no CRM e ${crm.ignoredCount ?? 0} não criados.${crm.warnings?.length ? ` Aviso: ${crm.warnings.join(", ")}` : ""}`
           : `${result.leads.length} leads liberados, mas o CRM não está configurado neste ambiente.`
         : `${result.leads.length} leads liberados para ${result.consultant.name}.`)
       setQuantity("")
@@ -144,7 +113,33 @@ export function BlackFridayPanel() {
     XLSX.writeFile(workbook, `black-friday-${data.campaign?.year ?? "campanha"}.xlsx`)
   }
 
-  if (loading || !data?.campaign) return null
+  if (loading || !data?.campaign) {
+    return (
+      <div className="flex min-h-[280px] w-full flex-col justify-between rounded-2xl border border-amber-400/25 bg-card p-6 shadow-lg">
+        <div>
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-amber-300/20 bg-amber-400/10">
+            <Sparkles className="size-6 text-amber-400" />
+          </div>
+          <p className="mt-4 text-[10px] font-bold uppercase tracking-widest text-amber-300/80">Campanha sazonal</p>
+          <h2 className="mt-2 text-2xl font-bold tracking-tight text-foreground">Black Friday</h2>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {loading
+              ? "Verificando a campanha..."
+              : error
+                ? error === "failed_to_load_campaign"
+                  ? "Falha ao carregar a campanha. Confira as migrações no banco de produção e os logs do painel."
+                  : error
+                : "Não há campanha ativa. Confira se ela foi cadastrada e se as datas estão vigentes."}
+          </p>
+        </div>
+        {!loading && (
+          <button type="button" onClick={() => void refresh()} className="mt-4 self-start rounded-md border border-border bg-background px-3 py-2 text-xs font-medium hover:bg-secondary">
+            Tentar novamente
+          </button>
+        )}
+      </div>
+    )
+  }
   const selectedCount = Number(quantity)
 
   return (
@@ -202,18 +197,7 @@ export function BlackFridayPanel() {
                   <p className="text-xs text-muted-foreground">Os leads serão liberados mesmo se o CRM estiver indisponível.</p>
                 </div>
               </div>
-              {sendToCrm && (
-                <label className="block space-y-2 text-sm font-medium">
-                  Responsável no CRM (opcional)
-                  <select value={crmOwnerId} onChange={(event) => setCrmOwnerId(event.target.value)} className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm" disabled={crmLoading || submitting}>
-                    <option value="">Sem responsável no CRM</option>
-                    {crmMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-                  </select>
-                  {crmLoading && <span className="block text-xs text-muted-foreground">Carregando membros do CRM…</span>}
-                  {crmError && <span role="alert" className="block text-xs text-destructive">{crmError} <button type="button" className="ml-1 underline underline-offset-2" onClick={() => { setCrmError(""); setCrmMembersFetched(false) }} disabled={crmLoading}>Tentar novamente</button></span>}
-                  {!crmLoading && crmMembersFetched && crmMembers.length === 0 && !crmError && <span className="block text-xs text-muted-foreground">O CRM não retornou usuários ativos. O envio pode seguir sem responsável.</span>}
-                </label>
-              )}
+              {sendToCrm && <p className="text-xs text-muted-foreground">O consultor escolhido recebe os contatos e os negócios no CRM. Acompanhe o envio no painel.</p>}
 
               {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
               {notice && <p role="status" className="text-sm text-emerald-500">{notice}</p>}

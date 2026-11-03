@@ -16,15 +16,43 @@ model Lead {
   state     String?
   company   String?
   fantasy   String?
+  email     String?
+  jobTitle  String?  @map("job_title")
+  dealDescription String? @map("deal_description")
+  crmDealId String? @map("crm_deal_id")
   createdAt DateTime @default(now()) @map("created_at")
 
   listaLeads ListaLead[]
   blackFridayClaim BlackFridayLead?
+  crmDelivery CrmDelivery?
 
   @@map("leads")
   @@index([city], map: "idx_leads_city")
   @@index([nicho], map: "idx_leads_nicho")
   @@index([nicho, state, city], map: "idx_leads_nicho_state_city")
+}
+
+model CrmDelivery {
+  id Int @id @default(autoincrement())
+  leadId Int @unique @map("lead_id")
+  listaId Int? @map("lista_id")
+  consultantCrmId String @map("consultant_crm_id")
+  payload Json
+  method String
+  status String @default("pending")
+  crmDealId String? @map("crm_deal_id")
+  error String?
+  warnings Json?
+  attemptedAt DateTime? @map("attempted_at")
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  lista Lista? @relation(fields: [listaId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt], map: "idx_crm_deliveries_pending")
+  @@index([listaId], map: "idx_crm_deliveries_lista")
+  @@map("crm_deliveries")
 }
 
 model ImportLog {
@@ -50,6 +78,7 @@ model Lista {
   agendorSentAt DateTime? @map("agendor_sent_at")
 
   leads ListaLead[]
+  crmDeliveries CrmDelivery[]
 
   @@map("listas")
   @@index([consultorId], map: "idx_listas_consultor_id")

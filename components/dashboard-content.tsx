@@ -7,6 +7,7 @@ import type { Consultant } from "@/lib/data"
 import { Input } from "@/components/ui/input"
 import { NicheCard } from "@/components/niche-card"
 import { NicheModal } from "@/components/niche-modal"
+import { CrmDeliveryStatus } from "@/components/crm-delivery-status"
 import { SuccessDialog } from "@/components/success-dialog"
 import { ScheduleTimeline } from "@/components/schedule-timeline"
 import { BlackFridayPanel } from "@/components/black-friday-panel"
@@ -24,6 +25,7 @@ export interface ScheduleEntry {
   crmWarnings?: string[]
   crmCreatedCount?: number
   crmIgnoredCount?: number
+  crmQueuedCount?: number
 }
 
 type GeneratedLead = {
@@ -178,6 +180,7 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
       crmWarnings: (data as { crmWarnings?: string[] }).crmWarnings,
       crmCreatedCount: (data as { crmCreatedCount?: number }).crmCreatedCount,
       crmIgnoredCount: (data as { crmIgnoredCount?: number }).crmIgnoredCount,
+      crmQueuedCount: (data as { crmQueuedCount?: number }).crmQueuedCount,
     }
     setGeneratedLeadsByEntryId((prev) => ({
       ...prev,
@@ -514,6 +517,7 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
+      <CrmDeliveryStatus />
       {/* Stats Bar */}
       <div className="mb-8 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5">

@@ -1,8 +1,12 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import { tmpdir } from "node:os"
 import { NextResponse } from "next/server"
 import { POST as runImportFromFolder } from "@/app/api/criar-lista/route"
 import { getAuthenticatedUser } from "@/lib/auth"
+import * as XLSX from "xlsx"
+import { readImportSpreadsheet } from "@/lib/import-spreadsheet"
+import { mapImportRow, validateMapping, MAX_IMPORT_BYTES } from "@/lib/import-mapping"
 
 export const runtime = "nodejs"
 
@@ -146,9 +150,34 @@ export async function POST(req: Request) {
     }
 
     const originalName = fileEntry.name || "upload"
-    const ext = path.extname(originalName).toLowerCase()
+    let ext = path.extname(originalName).toLowerCase()
     if (ext !== ".xlsx" && ext !== ".csv") {
       return NextResponse.json({ ok: false, error: "invalid_file_type" }, { status: 400 })
+    }
+
+    if (fileEntry.size > MAX_IMPORT_BYTES) return NextResponse.json({ ok: false, error: "O arquivo deve ter até 20 MB." }, { status: 400 })
+    let fileBuffer = Buffer.from(await fileEntry.arrayBuffer())
+    // A mapped upload is validated in full before writing any lead. Legacy ETL uploads remain supported.
+    const mappingJson = form.get("columnMapping")
+    if (mappingJson !== null) {
+      try {
+        const parsed = readImportSpreadsheet(fileBuffer, String(form.get("sheetName") ?? ""), Number(form.get("headerRow") ?? 1))
+        const mapping = validateMapping(JSON.parse(String(mappingJson)), parsed.headers, String(form.get("forceState") ?? ""))
+        const rows = parsed.rows.map((row, index) => {
+          try {
+            const mapped = mapImportRow(row, mapping)
+            if (!mapped.name) throw new Error("O nome do contato está vazio.")
+            if (!mapped.state && !String(form.get("forceState") ?? "").trim()) throw new Error("Informe o estado do contato.")
+            return mapped
+          } catch (error) { throw new Error(`Linha ${index + parsed.headerRow + 1}: ${error instanceof Error ? error.message : "Dados inválidos."}`) }
+        })
+        const workbook = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Contatos")
+        fileBuffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" })
+        ext = ".xlsx"
+      } catch (error) {
+        return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Mapeamento inválido." }, { status: 400 })
+      }
     }
 
     const nichoFromBody = typeof form.get("nichoFolder") === "string" ? String(form.get("nichoFolder")).trim() : ""
@@ -166,7 +195,6 @@ export async function POST(req: Request) {
       console.log("[UPLOAD] Using LEADS_SOURCE_DIR:", sourceRoot)
     } catch (accessError) {
       // Se não conseguir acessar (ex: caminho UNC do Windows no Linux), usa tmpdir
-      const { tmpdir } = await import("node:os")
       uploadDir = path.join(tmpdir(), "painel-nichos-uploads", targetNichoFolder)
       console.log("[UPLOAD] LEADS_SOURCE_DIR not accessible, using temp dir:", uploadDir)
       console.error("[UPLOAD] Access error:", accessError)
@@ -182,9 +210,7 @@ export async function POST(req: Request) {
     const storedFileName = `${Date.now()}-${safeBaseName}${ext}`
     uploadedPath = path.join(uploadDir, storedFileName)
 
-    const arrayBuffer = await fileEntry.arrayBuffer()
-    console.log("[UPLOAD] Writing file to:", uploadedPath, "Size:", arrayBuffer.byteLength)
-    await fs.writeFile(uploadedPath, Buffer.from(arrayBuffer))
+    await fs.writeFile(uploadedPath, fileBuffer)
     console.log("[UPLOAD] File written successfully")
 
     const dryRun = String(form.get("dryRun") ?? "").toLowerCase() === "true"

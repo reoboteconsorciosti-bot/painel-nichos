@@ -87,6 +87,9 @@ export async function syncCRMConsultants(user: { id: string; role: "admin" | "su
   const seen = new Set<string>()
   for (const member of consultants) {
     const supervisorId = member.team!.leaderId!
+    const supervisor = members.find((candidate) => candidate.id === supervisorId)
+    const teamName = member.team?.name ?? "Equipe sem nome"
+    const supervisorName = supervisor?.name ?? "Supervisor não identificado"
     let existing = await prisma.consultant.findUnique({ where: { crmMemberId: member.id } })
     if (!existing) {
       existing = await prisma.consultant.findFirst({
@@ -107,7 +110,7 @@ export async function syncCRMConsultants(user: { id: string; role: "admin" | "su
 
     if (!seen.has(consultant.id)) {
       seen.add(consultant.id)
-      synced.push({ ...consultant, crmUserId: member.id })
+      synced.push({ ...consultant, crmUserId: member.id, teamId: member.teamId, teamName, supervisorName })
     }
   }
   return synced
