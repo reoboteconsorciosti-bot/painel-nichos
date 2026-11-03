@@ -152,6 +152,7 @@ export async function POST(req: Request) {
     }
 
     const form = await req.formData()
+    const sendToCrm = String(form.get("sendToCrm") ?? "").toLowerCase() === "true"
     const fileEntry = form.get("file")
     if (!(fileEntry instanceof File)) {
       return NextResponse.json({ ok: false, error: "file_required" }, { status: 400 })
@@ -294,7 +295,7 @@ export async function POST(req: Request) {
         source: "Painel Nichos - " + targetNichoFolder,
       }))
       const contactJobs = []
-      for (let index = 0; index < contacts.length; index += 500) {
+      for (let index = 0; sendToCrm && index < contacts.length; index += 500) {
         const batch = contacts.slice(index, index + 500)
         contactJobs.push({
           leadId: null,
@@ -305,7 +306,7 @@ export async function POST(req: Request) {
           payload: { contacts: batch },
         })
       }
-      const deals = contacts.flatMap((contact, index) => {
+      const deals = sendToCrm ? contacts.flatMap((contact, index) => {
         const row = contactsByPhone.get(contact.phone)!
         if (!row.dealDescription) return []
         const delivery = buildCrmDelivery({
@@ -328,7 +329,7 @@ export async function POST(req: Request) {
           idempotencyKey: "import:" + importFingerprint + ":deal:" + contact.phone,
           ...delivery,
         }] : []
-      })
+      }) : []
       const deliveryJobs = [...contactJobs, ...deals]
       const importedPhones = [...contactsByPhone.keys()]
       const importedLeads = []
@@ -347,10 +348,14 @@ export async function POST(req: Request) {
       })
       let queueError = false
       if (deliveryJobs.length) {
-        try { await prisma.crmDelivery.createMany({ data: deliveryJobs, skipDuplicates: true }) }
+        try {
+          const keys = deliveryJobs.map(job => job.idempotencyKey)
+          await prisma.crmDelivery.updateMany({ where: { idempotencyKey: { in: keys }, status: "cancelled" }, data: { status: "pending", error: null, nextAttemptAt: new Date() } })
+          await prisma.crmDelivery.createMany({ data: deliveryJobs, skipDuplicates: true })
+        }
         catch (error) { queueError = true; console.error("[UPLOAD] CRM queue could not be recorded after the panel import", error) }
       }
-      crmImport = {
+      crmImport = sendToCrm ? {
         configured: !!(process.env.CRM_API_URL?.trim() && process.env.CRM_API_KEY?.trim()),
         contactsCount: contacts.length,
         contactBatchesQueued: queueError ? 0 : contactJobs.length,
@@ -358,7 +363,7 @@ export async function POST(req: Request) {
         dealJobsQueued: queueError ? 0 : deals.length,
         batchId: batch.id,
         queueError,
-      }
+      } : null
     }
 
     return NextResponse.json(

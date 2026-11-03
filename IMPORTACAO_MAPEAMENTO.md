@@ -2,7 +2,7 @@
 
 Fluxo: Importar contatos → escolher arquivo e nicho → mapear colunas → conferir a prévia → importar. Não há escrita no banco na etapa de prévia. São aceitos XLSX e CSV, até 20 MB e 5.000 linhas de dados, com seleção de aba e linha de cabeçalho. Cabeçalhos duplicados devem ser corrigidos na origem.
 
-Nome, telefone e estado são necessários no mapeamento; o estado pode ser informado uma vez para toda a planilha. Várias colunas podem usar o destino **Descrição do negócio**: os valores não vazios são unidos com os nomes das colunas, uma informação por linha. Colunas marcadas como **Ignorar** não são importadas. Se um telefone já existe no Painel, sua linha não cria um segundo registro nem altera os dados do registro interno; ela continua sendo enviada ao CRM.
+Nome e telefone são necessários no mapeamento. Nos nichos comuns, também é necessário mapear a UF ou preencher uma UF para toda a planilha; na Black Friday, localização não é exigida. Várias colunas podem usar o destino **Descrição do negócio**: os valores não vazios são unidos com os nomes das colunas, uma informação por linha. Colunas marcadas como **Ignorar** não são importadas. Telefones existentes no Painel não são duplicados; o envio deles ao CRM só ocorre quando a opção de envio é marcada.
 
 O mapeamento é validado novamente no servidor contra o arquivo enviado. O cabeçalho, a aba e o mapeamento confirmados são usados na importação. A normalização existente de telefones, cidades e estados continua sendo aplicada. Nome, telefone, empresa, cidade, estado, e-mail, cargo, descrição e ID de negócio são preservados até a geração da lista.
 
@@ -20,7 +20,7 @@ Fonte consultada em 03/11/2026: https://crm.reoboteconsorcios.com.br/docs
 
 ## Envio e acompanhamento
 
-A importação envia todos os contatos válidos ao CRM, inclusive os telefones que o Painel já tinha. A API do CRM atualiza o contato existente pelo telefone/WhatsApp. Telefones repetidos dentro do mesmo arquivo são agrupados para evitar criar negócios em duplicidade.
+O envio ao CRM é opcional e vem desmarcado. Quando selecionado, os contatos válidos, inclusive telefones que o Painel já tinha, são enviados. A API do CRM atualiza o contato existente pelo telefone/WhatsApp. Telefones repetidos dentro do mesmo arquivo são agrupados para evitar criar negócios em duplicidade.
 
 - Contatos são agrupados em lotes de até 500 e enfileirados para `POST /api/v1/contacts/bulk`. A fila respeita o limite documentado de 10 chamadas por minuto.
 - Com descrição e sem ID de negócio, a importação também enfileira a criação de um negócio com a descrição mapeada.

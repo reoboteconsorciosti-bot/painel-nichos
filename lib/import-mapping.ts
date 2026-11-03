@@ -1,3 +1,5 @@
+import { normalizeImportPhone } from "@/lib/phone-normalization"
+
 export const IMPORT_TARGETS = {
   ignore: "Ignorar",
   name: "Nome do contato",
@@ -18,12 +20,12 @@ export const MAX_IMPORT_ROWS = 5000
 export const MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 const aliases: Record<string, ImportTarget> = {
-  nome: "name", name: "name", cliente: "name", contato: "name", nomecompleto: "name",
-  telefone: "phone", celular: "phone", whatsapp: "phone", phone: "phone", fone: "phone",
-  cidade: "city", municipio: "city", city: "city", estado: "state", uf: "state", state: "state",
+  nome: "name", name: "name", cliente: "name", contato: "name", nomecompleto: "name", nomedocontato: "name", nomecliente: "name",
+  telefone: "phone", telefonecelular: "phone", numerotelefone: "phone", numerodetelefone: "phone", telefonecontato: "phone", telefoneprincipal: "phone", telefonecomercial: "phone", telefone1: "phone", telefone2: "phone", celular: "phone", numerocelular: "phone", celularprincipal: "phone", celularcomercial: "phone", celular1: "phone", whatsapp: "phone", whatsappnumber: "phone", numerowhatsapp: "phone", whatsapp1: "phone", whats: "phone", phone: "phone", phonenumber: "phone", telephone: "phone", telephone1: "phone", mobile: "phone", mobilephone: "phone", mobilephone1: "phone", fone: "phone", fonecontato: "phone", fonecomercial: "phone", fone1: "phone", tel: "phone",
+  cidade: "city", municipio: "city", localidade: "city", city: "city", estado: "state", uf: "state", state: "state",
   empresa: "company", razaosocial: "company", company: "company", nomefantasia: "fantasy",
-  email: "email", cargo: "jobTitle", jobtitle: "jobTitle", crmdealid: "crmDealId",
-  descricao: "dealDescription", observacoes: "dealDescription", observacao: "dealDescription",
+  email: "email", emailaddress: "email", correioeletronico: "email", cargo: "jobTitle", funcao: "jobTitle", jobtitle: "jobTitle", crmdealid: "crmDealId", idnegocio: "crmDealId", dealid: "crmDealId",
+  descricao: "dealDescription", description: "dealDescription", descricaonegocio: "dealDescription", businessdescription: "dealDescription", dealnotes: "dealDescription", notes: "dealDescription", observacoes: "dealDescription", observacao: "dealDescription", anotacoes: "dealDescription", notas: "dealDescription",
 }
 
 export function suggestMapping(headers: string[]): ColumnMapping {
@@ -66,7 +68,11 @@ export function mapImportRow(row: Record<string, unknown>, mapping: ColumnMappin
     else result[target] = value
   }
   result.dealDescription = description.join("\n")
-  if (result.crmDealId && !/^[a-zA-Z0-9_-]{1,128}$/.test(result.crmDealId)) throw new Error("ID de negócio inválido na planilha.")
+  // Mostra na prévia e envia ao importador o telefone já corrigido quando
+  // há um formato brasileiro reconhecível. Números irrecuperáveis seguem
+  // para o relatório de linhas inválidas, sem cancelar o lote inteiro.
+  result.phone = normalizeImportPhone(result.phone) ?? result.phone
+  if (result.crmDealId && !/^[a-zA-Z0-9._~:-]{1,128}$/.test(result.crmDealId)) throw new Error("ID de negócio inválido na planilha.")
   if (result.crmDealId && result.dealDescription.length > 2000) {
     throw new Error("A nota de um negócio existente aceita até 2.000 caracteres. Reduza as colunas da descrição.")
   }

@@ -4,6 +4,7 @@ export type CRMMember = {
   id: string
   name: string
   email: string
+  photoUrl: string | null
   role: "OWNER" | "MANAGER" | "SUPERVISOR" | "MEMBER"
   area: "SALES" | "ADMINISTRATIVE"
   active: boolean
@@ -48,6 +49,7 @@ function parseMember(value: unknown): CRMMember | null {
     id: value.id,
     name: value.name,
     email: value.email,
+    photoUrl: typeof value.photoUrl === "string" && value.photoUrl.trim() ? value.photoUrl.trim() : null,
     role: role as CRMMember["role"],
     area,
     active: value.active,
@@ -110,7 +112,7 @@ export async function syncCRMConsultants(user: { id: string; role: "admin" | "su
 
     if (!seen.has(consultant.id)) {
       seen.add(consultant.id)
-      synced.push({ ...consultant, crmUserId: member.id, teamId: member.teamId, teamName, supervisorName })
+      synced.push({ ...consultant, crmUserId: member.id, photoUrl: member.photoUrl, teamId: member.teamId, teamName, supervisorName })
     }
   }
   return synced

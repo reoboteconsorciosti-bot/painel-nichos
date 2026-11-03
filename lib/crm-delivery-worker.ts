@@ -75,11 +75,13 @@ export async function processNextCrmDelivery() {
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "sent", crmDealId: data.data.id, warnings: Array.isArray(data.data.warnings) ? data.data.warnings : [], error: null } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: data.data.warnings?.length ? "partial" : "sent" } })
     } else {
-      await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: response.status >= 500 || response.ok ? "needs_review" : "failed", error: typeof data?.error === "string" ? data.error : `O CRM retornou HTTP ${response.status}. Confira o negócio antes de reenviar.` } })
+      const target = job.method === "CONTACTS_BULK" ? "os contatos" : "o negócio"
+      await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: response.status >= 500 || response.ok ? "needs_review" : "failed", error: typeof data?.error === "string" ? data.error : `O CRM retornou HTTP ${response.status}. Confira ${target} no CRM antes de reenviar.` } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "error" } })
     }
   } catch {
-    await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "needs_review", error: "Não foi possível confirmar a resposta do CRM. Confira o negócio antes de reenviar para evitar duplicação." } })
+    const target = job.method === "CONTACTS_BULK" ? "os contatos" : "o negócio"
+    await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "needs_review", error: `Não foi possível confirmar a resposta do CRM. Confira ${target} antes de reenviar para evitar duplicação.` } })
     if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "error" } })
   }
 }

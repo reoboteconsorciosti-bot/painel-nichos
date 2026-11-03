@@ -20,10 +20,12 @@ import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { NICHES } from "@/lib/data"
 import { cn } from "@/lib/utils"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 type ConsultantQuotaRow = {
   crmUserId: string
   name: string
+  photoUrl?: string | null
   supervisorId: string
   supervisorName?: string
   teamId?: string | null
@@ -553,9 +555,10 @@ export function OwnerManagementPanel() {
                         {/* Consultor */}
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2.5">
-                            <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
-                              {getInitials(row.name)}
-                            </div>
+                            <Avatar className="size-7 border border-border bg-primary/10 text-[11px] font-semibold text-primary">
+                              {row.photoUrl ? <AvatarImage src={row.photoUrl} alt={`Foto de ${row.name}`} /> : null}
+                              <AvatarFallback className="bg-primary/10 text-primary">{getInitials(row.name)}</AvatarFallback>
+                            </Avatar>
                             <span className="font-semibold text-foreground">{row.name}</span>
                           </div>
                         </td>
@@ -629,29 +632,23 @@ export function OwnerManagementPanel() {
                               aria-label={`Limite de ${row.name}`}
                             />
 
-                            {/* Dica interativa para aplicar à equipe ou a todos */}
-                            {isLimitChanged && limitIsValid && (
+                            {/* Dica interativa para aplicar à equipe (apenas quando filtrado por equipe) */}
+                            {isLimitChanged && limitIsValid && isFilteredByTeam && (
                               <button
                                 type="button"
                                 onClick={() =>
                                   applyBatchLimit(
                                     nextLimit,
-                                    isFilteredByTeam ? "team" : "all",
-                                    isFilteredByTeam ? teamFilter : undefined,
+                                    "team",
+                                    teamFilter,
                                   )
                                 }
                                 className="mt-1.5 inline-flex max-w-[200px] items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary transition-all hover:bg-primary/20 hover:border-primary"
-                                title={
-                                  isFilteredByTeam
-                                    ? `Clique para aplicar ${nextLimit} para todos os ${teamCount} consultores da equipe ${targetTeamName}`
-                                    : `Clique para aplicar ${nextLimit} para todos os ${totalCount} consultores`
-                                }
+                                title={`Clique para aplicar ${nextLimit} para todos os ${teamCount} consultores da equipe ${targetTeamName}`}
                               >
                                 <Sparkles className="size-2.5 shrink-0" />
                                 <span className="truncate">
-                                  {isFilteredByTeam
-                                    ? `Aplicar para equipe (${teamCount})`
-                                    : `Aplicar para todos (${totalCount})`}
+                                  Aplicar para equipe ({teamCount})
                                 </span>
                               </button>
                             )}
@@ -679,27 +676,23 @@ export function OwnerManagementPanel() {
                               Salvar
                             </button>
 
-                            {/* Botão contextual para aplicar em lote */}
-                            {isLimitChanged && limitIsValid && (
+                            {/* Botão contextual para aplicar em lote na equipe (apenas quando filtrado por equipe) */}
+                            {isLimitChanged && limitIsValid && isFilteredByTeam && (
                               <button
                                 type="button"
                                 onClick={() =>
                                   applyBatchLimit(
                                     nextLimit,
-                                    isFilteredByTeam ? "team" : "all",
-                                    isFilteredByTeam ? teamFilter : undefined,
+                                    "team",
+                                    teamFilter,
                                   )
                                 }
                                 disabled={busy !== null}
                                 className="inline-flex h-8 items-center gap-1 rounded-md border border-primary/50 bg-primary/15 px-2.5 text-xs font-semibold text-primary transition-all hover:bg-primary/25 disabled:opacity-40"
-                                title={
-                                  isFilteredByTeam
-                                    ? `Aplicar ${nextLimit} para toda a equipe ${targetTeamName} (${teamCount} consultores)`
-                                    : `Aplicar ${nextLimit} para todos os ${totalCount} consultores`
-                                }
+                                title={`Aplicar ${nextLimit} para toda a equipe ${targetTeamName} (${teamCount} consultores)`}
                               >
                                 <Users className="size-3" />
-                                {isFilteredByTeam ? "Equipe inteira" : "Aplicar a todos"}
+                                Equipe inteira
                               </button>
                             )}
 

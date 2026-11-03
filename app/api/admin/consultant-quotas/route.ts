@@ -32,6 +32,7 @@ export async function GET(req: Request) {
       consultants: consultants.map((consultant) => ({
         crmUserId: consultant.crmUserId,
         name: consultant.name,
+        photoUrl: consultant.photoUrl,
         supervisorId: consultant.supervisorId,
         supervisorName: consultant.supervisorName,
         teamId: consultant.teamId,

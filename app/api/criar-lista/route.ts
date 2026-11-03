@@ -6,7 +6,10 @@ import { NextResponse } from "next/server"
 import * as XLSX from "xlsx"
 import csvParser from "csv-parser"
 import { prisma } from "@/lib/prisma"
+import { isLikelyPhoneDigits, normalizeImportPhone, normalizePhone } from "@/lib/phone-normalization"
 import type { Prisma } from "@prisma/client"
+
+export { normalizeImportPhone } from "@/lib/phone-normalization"
 
 type RawRow = Record<string, unknown>
 
@@ -59,115 +62,6 @@ type EtlStats = {
 }
 
 export const runtime = "nodejs"
-
-function normalizePhone(input: unknown): string {
-  const raw = String(input ?? "").trim()
-  if (!raw) return ""
-
-  // Alguns CSVs/planilhas exportam telefone em notação científica (ex.: 6.5998136929E+10).
-  // Se apenas removermos não-dígitos, acabamos “colando” o expoente e quebrando o telefone.
-  if (/[eE][+-]?\d+/.test(raw)) {
-    const parts = raw.split(/e/i)
-    const mantissaRaw = (parts[0] ?? "").trim()
-    const expRaw = (parts[1] ?? "").trim()
-    const exp = Number(expRaw)
-
-    // parse científico por string (lida com vírgula decimal e evita perdas/NaN)
-    if (Number.isInteger(exp) && exp >= 0) {
-      const mantissaNormalized = mantissaRaw.replace(",", ".")
-      const m = mantissaNormalized.match(/^(\d+)(?:\.(\d+))?$/)
-      if (m) {
-        const intPart = m[1] ?? ""
-        const fracPart = m[2] ?? ""
-        const digits = (intPart + fracPart).replace(/^0+/, "")
-        const fracLen = fracPart.length
-        const zerosNeeded = exp - fracLen
-        if (digits && zerosNeeded >= 0) {
-          return digits + "0".repeat(zerosNeeded)
-        }
-      }
-    }
-
-    // fallback numérico (pode falhar com vírgula decimal)
-    const n = Number(raw.replace(",", "."))
-    if (Number.isFinite(n)) {
-      const asInt = Math.trunc(n)
-      if (asInt > 0) return String(asInt)
-    }
-  }
-
-  const digits = raw.replace(/\D/g, "")
-  if (!digits) return ""
-  return digits
-}
-
-export function normalizeImportPhone(input: unknown): string | null {
-  const phone = normalizePhone(input)
-  return phone && isLikelyPhoneDigits(phone) ? phone : null
-}
-
-function isValidCpfDigits(digits: string): boolean {
-  if (!/^\d{11}$/.test(digits)) return false
-  if (/^(\d)\1{10}$/.test(digits)) return false
-  const nums = digits.split("").map((c) => Number(c))
-  let sum1 = 0
-  for (let i = 0; i < 9; i++) sum1 += nums[i]! * (10 - i)
-  let d1 = (sum1 * 10) % 11
-  if (d1 === 10) d1 = 0
-  if (d1 !== nums[9]) return false
-  let sum2 = 0
-  for (let i = 0; i < 10; i++) sum2 += nums[i]! * (11 - i)
-  let d2 = (sum2 * 10) % 11
-  if (d2 === 10) d2 = 0
-  return d2 === nums[10]
-}
-
-function isValidCnpjDigits(digits: string): boolean {
-  if (!/^\d{14}$/.test(digits)) return false
-  if (/^(\d)\1{13}$/.test(digits)) return false
-  const nums = digits.split("").map((c) => Number(c))
-  const w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-  const w2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-  let sum1 = 0
-  for (let i = 0; i < 12; i++) sum1 += nums[i]! * w1[i]!
-  let r1 = sum1 % 11
-  const d1 = r1 < 2 ? 0 : 11 - r1
-  if (d1 !== nums[12]) return false
-  let sum2 = 0
-  for (let i = 0; i < 13; i++) sum2 += nums[i]! * w2[i]!
-  let r2 = sum2 % 11
-  const d2 = r2 < 2 ? 0 : 11 - r2
-  return d2 === nums[13]
-}
-
-function isCpfOrCnpjDigits(digits: string): boolean {
-  return isValidCpfDigits(digits) || isValidCnpjDigits(digits)
-}
-
-function isLikelyPhoneDigits(digitsRaw: string): boolean {
-  let digits = digitsRaw
-
-  // Remove DDI comum no Brasil
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-    digits = digits.slice(2)
-  }
-
-  // Remove prefixo tronco 0 (ex.: 067...) que aparece em algumas planilhas
-  if (digits.startsWith("0") && (digits.length === 11 || digits.length === 12)) {
-    digits = digits.slice(1)
-  }
-
-  if (!/^\d+$/.test(digits)) return false
-  if (digits.length !== 10 && digits.length !== 11) return false
-  if (isCpfOrCnpjDigits(digits)) return false
-  if (/^(\d)\1{9,10}$/.test(digits)) return false
-
-  // Heurística BR: número de 11 dígitos normalmente é celular (DDD + 9xxxxxxxx).
-  // Isso ajuda a evitar que CPF (11 dígitos) vire "telefone".
-  if (digits.length === 11 && digits[2] !== "9") return false
-
-  return true
-}
 
 function normalizeText(input: unknown): string {
   const s = String(input ?? "").trim()
@@ -692,11 +586,9 @@ function normalizeRow(
   const likely = normalizePhone(pickLikelyPhoneValue(row))
   if (likely) phoneCandidates.push(likely)
 
-  const telefone =
-    phoneCandidates
-      .map((p) => normalizePhone(p))
-      .filter(Boolean)
-      .find((p) => isLikelyPhoneDigits(p)) ?? ""
+  const telefone = phoneCandidates
+    .map((p) => normalizeImportPhone(p))
+    .find((p): p is string => !!p) ?? ""
   if (!telefone) {
     const ddd1 = normalizePhone(mapped.ddd1)
     const phoneRaw = normalizePhone(mapped.phone)
