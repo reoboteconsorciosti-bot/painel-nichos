@@ -10,6 +10,25 @@ type ImportBatch = { id: number; fileName: string; niche: string; importedCount:
 const inputClass = "h-11 w-full min-w-0 rounded-lg border border-border bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
 const cardClass = "rounded-2xl border border-border bg-card/80 p-5 shadow-sm sm:p-6"
 
+function friendlyImportError(value: unknown): string {
+  const message = value instanceof Error ? value.message : String(value ?? "")
+  const normalized = message.toLowerCase()
+  if (["unauthorized", "forbidden_owner_only"].includes(normalized)) return "Sua sessão não tem permissão para importar. Entre novamente ou peça acesso ao administrador."
+  if (normalized === "file_required") return "Escolha a planilha que deseja importar."
+  if (normalized === "invalid_file_type") return "Use uma planilha Excel (.xlsx) ou CSV (.csv)."
+  if (normalized === "leads_source_dir_not_configured" || normalized === "etl_token_not_configured") return "A importação está temporariamente indisponível. Avise o responsável pelo sistema."
+  if (normalized === "database_url_not_configured" || /p\d{4}|prisma|database|idempotency_key|column .* does not exist|relation .* does not exist/.test(normalized)) return "O sistema encontrou um problema interno ao salvar. Os contatos podem já ter sido importados; confira o histórico antes de tentar novamente."
+  if (/^linha \d+:/i.test(message)) return message.replace("O nome do contato está vazio.", "O nome está em branco.").replace("Informe o estado do contato.", "Preencha a UF.").replace("ID de negócio inválido na planilha.", "Confira o ID do negócio.")
+  if (/^(unsupported|invalid .*zip|end of central|cannot read|failed to|unable to|unexpected|typeerror|rangeerror)/i.test(message)) return "Não foi possível abrir a planilha. Confira se o arquivo está válido e tente salvar uma nova cópia em Excel ou CSV."
+  if (/fetch|internal server error|stack trace|undefined|exception/.test(normalized)) return "Não foi possível concluir esta etapa. Confira os dados do arquivo e tente novamente."
+  return message || "Não foi possível concluir a importação. Confira o arquivo e tente novamente."
+}
+
+function friendlyRowIssue(reason: unknown): string {
+  if (reason === "missing_or_invalid_phone") return "Telefone ausente ou inválido. Confira o DDD e o número."
+  return "Esta linha tem dados incompletos ou inválidos. Confira o nome e o telefone."
+}
+
 export function ImportPanel() {
   const [file, setFile] = useState<File | null>(null)
   const [sheet, setSheet] = useState("")
@@ -55,7 +74,7 @@ export function ImportPanel() {
         if (!response.ok || !data.ok) throw new Error(data.error === "unauthorized" ? "Entre como administrador para importar." : data.error || "Não foi possível ler o arquivo.")
         if (!controller.signal.aborted) { setPreview(data); setMapping(data.mapping) }
       } catch (cause) {
-        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Não foi possível ler o arquivo.")
+        if (!controller.signal.aborted) setError(friendlyImportError(cause))
       } finally { if (!controller.signal.aborted) setReading(false) }
     }, 250)
     return () => { controller.abort(); clearTimeout(timer) }
@@ -69,11 +88,12 @@ export function ImportPanel() {
     } else setFile(next)
   }
 
+  const isBlackFriday = nicho.startsWith("black-friday-")
   let validation: string | null = null
   let samples: Record<string, string>[] = []
   if (preview) {
     try {
-      validateMapping(mapping, preview.headers, forceState)
+      validateMapping(mapping, preview.headers, forceState, !!nicho && !isBlackFriday)
       samples = preview.rows.map(row => ({ ...mapImportRow(row, mapping), ...(forceCity ? { city: forceCity } : {}), ...(forceState ? { state: forceState } : {}) }))
     } catch (cause) { validation = cause instanceof Error ? cause.message : "Confira o mapeamento." }
   }
@@ -87,13 +107,13 @@ export function ImportPanel() {
       const form = new FormData()
       form.append("file", file); form.append("sheetName", preview.sheetName); form.append("headerRow", String(headerRow))
       form.append("columnMapping", JSON.stringify(mapping)); form.append("nichoFolder", nicho)
-      form.append("forceCity", forceCity); form.append("forceState", forceState); form.append("maxRowsPerFile", "5000")
+      form.append("forceCity", isBlackFriday ? "" : forceCity); form.append("forceState", isBlackFriday ? "" : forceState); form.append("maxRowsPerFile", "5000")
       const response = await fetch("/api/import/upload", { method: "POST", body: form })
       const data = await response.json()
       if (!response.ok || !data.ok) throw new Error(data.error || "Não foi possível importar.")
       setResult(data)
       void loadHistory()
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível importar.") }
+    } catch (cause) { setError(friendlyImportError(cause)) }
     finally { setSaving(false) }
   }
 
@@ -105,12 +125,14 @@ export function ImportPanel() {
       const data = await response.json()
       if (!response.ok || !data.ok) throw new Error("Não foi possível desimportar este lote.")
       await loadHistory()
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível desimportar este lote.") }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível desimportar. Atualize a página e tente novamente.") }
     finally { setUndoing(null) }
   }
 
   const stats = result?.stats as Record<string, unknown> | undefined
-  const crmImport = result?.crmImport as { configured?: boolean; contactsCount?: number; contactBatchesQueued?: number; dealsCount?: number } | null | undefined
+  const crmImport = result?.crmImport as { configured?: boolean; contactsCount?: number; contactBatchesQueued?: number; dealsCount?: number; queueError?: boolean } | null | undefined
+  const fileIssues = stats?.errosDetalhes && typeof stats.errosDetalhes === "object" ? Object.keys(stats.errosDetalhes as Record<string, unknown>) : []
+  const rowIssues = Array.isArray(stats?.exemplosErrosValidacao) ? stats.exemplosErrosValidacao as Array<{ arquivo?: string; motivo?: string }> : []
   const steps = ["Arquivo e destino", "Mapeamento", "Revisão"]
 
   return (
@@ -139,7 +161,7 @@ export function ImportPanel() {
               <span className="mt-1 text-xs text-muted-foreground">{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "Formatos .xlsx e .csv"}</span>
             </label>
             <div className="grid content-center gap-4 sm:grid-cols-2 lg:grid-cols-1">
-              <label className="space-y-2 text-sm font-medium">Nicho<select aria-label="Nicho" className={inputClass} value={nicho} onChange={event => setNicho(event.target.value)}><option value="">Selecione o nicho</option><option value={`black-friday-${new Date().getFullYear()}`}>Black Friday {new Date().getFullYear()}</option>{NICHES.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label className="space-y-2 text-sm font-medium">Nicho<select aria-label="Nicho" className={inputClass} value={nicho} onChange={event => { const value = event.target.value; setNicho(value); if (value.startsWith("black-friday-")) { setForceCity(""); setForceState("") } }}><option value="">Selecione o nicho</option><option value={`black-friday-${new Date().getFullYear()}`}>Black Friday {new Date().getFullYear()}</option>{NICHES.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
               {sheets.length > 1 && <label className="space-y-2 text-sm font-medium">Aba da planilha<select className={inputClass} value={sheet || preview?.sheetName || sheets[0]} onChange={event => { setPreview(null); setSheet(event.target.value) }}>{sheets.map(name => <option key={name}>{name}</option>)}</select></label>}
               {file && <label className="space-y-2 text-sm font-medium">Linha do cabeçalho<input type="number" min={1} max={100} value={headerRow} onChange={event => { setPreview(null); setHeaderRow(Number(event.target.value) || 1) }} className={inputClass} /></label>}
             </div>
@@ -154,7 +176,7 @@ export function ImportPanel() {
               <div className="hidden grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)] gap-4 bg-muted/40 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:grid"><span>Coluna da planilha</span><span>Destino</span></div>
               <div className="divide-y divide-border">{preview.headers.map((header, index) => <div key={header} className="grid gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)] sm:items-center sm:gap-4 sm:px-4"><div className="min-w-0"><label htmlFor={`column-${index}`} className="block truncate text-sm font-medium" title={header}>{header}</label><p className="truncate text-xs text-muted-foreground" title={preview.rows[0]?.[header]}>{preview.rows[0]?.[header] || "Sem exemplo"}</p></div><select id={`column-${index}`} value={mapping[header] ?? "ignore"} onChange={event => { setMapping(current => ({ ...current, [header]: event.target.value as ImportTarget })); setResult(null) }} className={inputClass}>{Object.entries(IMPORT_TARGETS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>)}</div>
             </div>
-            <details className="mt-4 rounded-xl border border-border px-4 py-3 text-sm"><summary className="cursor-pointer font-medium">Localização para todos os contatos <span className="font-normal text-muted-foreground">(opcional)</span></summary><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="space-y-1.5">Cidade<input value={forceCity} onChange={event => setForceCity(event.target.value)} className={inputClass} placeholder="Ex.: Cuiabá" /></label><label className="space-y-1.5">Estado (UF)<input value={forceState} onChange={event => setForceState(event.target.value.toUpperCase())} maxLength={2} className={inputClass} placeholder="Ex.: MT" /></label></div></details>
+            {!isBlackFriday && <details className="mt-4 rounded-xl border border-border px-4 py-3 text-sm"><summary className="cursor-pointer font-medium">Localização para todos os contatos <span className="font-normal text-muted-foreground">(opcional)</span></summary><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="space-y-1.5">Cidade<input value={forceCity} onChange={event => setForceCity(event.target.value)} className={inputClass} placeholder="Ex.: Cuiabá" /></label><label className="space-y-1.5">Estado (UF)<input value={forceState} onChange={event => setForceState(event.target.value.toUpperCase())} maxLength={2} className={inputClass} placeholder="Ex.: MT" /></label></div></details>}
             {validation && <p role="alert" className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-400">{validation}</p>}
           </section>
 
@@ -170,7 +192,7 @@ export function ImportPanel() {
       </fieldset>
 
       {error && <p role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{error}</p>}
-      {result && <section role="status" className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.04] p-5"><div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400"><Check className="h-5 w-5" /></span><div><h3 className="font-semibold">Importação concluída</h3><p className="mt-1 text-sm text-muted-foreground">{String(stats?.inseridos ?? 0)} contatos novos no Painel · {String(stats?.linhasInvalidas ?? 0)} linhas inválidas · {String(stats?.erros ?? 0)} erros</p>{crmImport && <p className="mt-2 text-sm text-muted-foreground">{crmImport.contactsCount ?? 0} contatos enviados para a fila do CRM{(crmImport.dealsCount ?? 0) > 0 ? ` · ${crmImport.dealsCount} negócios ou notas` : ""}.</p>}{crmImport && !crmImport.configured && <p className="mt-2 text-sm text-amber-400">A fila aguarda a configuração do CRM no servidor.</p>}</div></div>{(Number(stats?.erros ?? 0) > 0 || Number(stats?.linhasInvalidas ?? 0) > 0) && <details className="mt-4 text-sm"><summary className="cursor-pointer">Ver detalhes</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify({ erros: stats?.errosDetalhes, linhas: stats?.exemplosErrosValidacao }, null, 2)}</pre></details>}</section>}
+      {result && <section role="status" className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.04] p-5"><div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400"><Check className="h-5 w-5" /></span><div><h3 className="font-semibold">Importação concluída</h3><p className="mt-1 text-sm text-muted-foreground">{String(stats?.inseridos ?? 0)} contatos novos no Painel · {String(stats?.linhasInvalidas ?? 0)} linhas com dados inválidos · {String(stats?.erros ?? 0)} falhas no processamento</p>{crmImport?.queueError ? <p role="alert" className="mt-2 text-sm text-amber-400">Os contatos estão no Painel, mas não foi possível preparar o envio ao CRM. Avise o responsável pelo sistema antes de tentar novamente.</p> : crmImport && <p className="mt-2 text-sm text-muted-foreground">{crmImport.contactsCount ?? 0} contatos na fila do CRM{(crmImport.dealsCount ?? 0) > 0 ? ` · ${crmImport.dealsCount} negócios ou notas` : ""}.</p>}{crmImport && !crmImport.configured && <p className="mt-2 text-sm text-amber-400">O envio ao CRM aguarda uma configuração do sistema.</p>}</div></div>{(Number(stats?.erros ?? 0) > 0 || Number(stats?.linhasInvalidas ?? 0) > 0) && <details className="mt-4 text-sm"><summary className="cursor-pointer">Ver problemas encontrados</summary><ul className="mt-3 space-y-2 text-xs text-muted-foreground">{rowIssues.map((issue, index) => <li key={`row-${index}`} className="rounded-lg bg-background/60 p-3"><span className="font-medium text-foreground">{issue.arquivo ?? "Planilha"}:</span> {friendlyRowIssue(issue.motivo)}</li>)}{fileIssues.map((fileName, index) => <li key={`file-${index}`} className="rounded-lg bg-background/60 p-3"><span className="font-medium text-foreground">{fileName.replace(/^import_log:/, "")}:</span> Não foi possível registrar ou processar este arquivo. Confira o formato e, se persistir, avise o responsável pelo sistema.</li>)}</ul></details>}</section>}
 
       <section className={cardClass}>
         <div className="mb-4 flex items-start gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted text-muted-foreground"><History className="h-4 w-4" /></span><div><h3 className="font-semibold">Histórico</h3><p className="mt-1 text-xs text-muted-foreground">Desimporte um lote para remover do Painel os contatos novos daquele arquivo.</p></div></div>

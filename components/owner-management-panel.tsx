@@ -11,6 +11,7 @@ import {
   Save,
   Search,
   SlidersHorizontal,
+  Sparkles,
   Target,
   TrendingUp,
   Users,
@@ -157,6 +158,61 @@ export function OwnerManagementPanel() {
       setTimeout(() => setNotice(""), 3000)
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Falha ao salvar alteração")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Batch apply limit to an entire team or all consultants
+  const applyBatchLimit = async (limitValue: number, mode: "team" | "all", specificTeam?: string) => {
+    const targetRows =
+      mode === "team" && specificTeam
+        ? rows.filter((r) => (r.teamName || "Equipe sem nome") === specificTeam)
+        : rows
+
+    const targetIds = targetRows.map((r) => r.crmUserId)
+    const targetLabel = mode === "team" ? `da equipe "${specificTeam}"` : "do sistema"
+
+    if (targetIds.length === 0) return
+
+    if (
+      !window.confirm(
+        `Aplicar o limite de ${limitValue} leads para todos os ${targetIds.length} consultores ${targetLabel}?`,
+      )
+    ) {
+      return
+    }
+
+    setBusy("batch")
+    setError("")
+    setNotice("")
+
+    try {
+      const response = await fetch("/api/admin/consultant-quotas", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          crmUserIds: targetIds,
+          monthlyLimit: limitValue,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok || !data.ok) throw new Error(data.error ?? "Falha ao aplicar limite em lote")
+
+      setLimits((prev) => {
+        const next = { ...prev }
+        for (const id of targetIds) {
+          next[id] = String(limitValue)
+        }
+        return next
+      })
+
+      setNotice(`Limite de ${limitValue} aplicado para ${targetIds.length} consultores ${targetLabel}!`)
+      await loadQuotas()
+      setTimeout(() => setNotice(""), 4000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao aplicar em lote")
     } finally {
       setBusy(null)
     }
@@ -487,6 +543,11 @@ export function OwnerManagementPanel() {
                     const isLimitChanged = limitIsValid && nextLimit !== row.monthlyLimit
                     const usagePercent = row.monthlyLimit > 0 ? Math.min(100, Math.round((row.used / row.monthlyLimit) * 100)) : 0
 
+                    const isFilteredByTeam = teamFilter !== "all"
+                    const targetTeamName = isFilteredByTeam ? teamFilter : (row.teamName || "Equipe sem nome")
+                    const teamCount = rows.filter((r) => (r.teamName || "Equipe sem nome") === targetTeamName).length
+                    const totalCount = rows.length
+
                     return (
                       <tr key={row.crmUserId} className="transition-colors hover:bg-muted/20">
                         {/* Consultor */}
@@ -547,25 +608,60 @@ export function OwnerManagementPanel() {
                           </div>
                         </td>
 
-                        {/* Limite input */}
+                        {/* Limite input com Dica inteligente */}
                         <td className="px-4 py-3 text-center">
-                          <input
-                            type="number"
-                            min={1}
-                            max={10000}
-                            value={limits[row.crmUserId] ?? String(row.monthlyLimit)}
-                            onChange={(e) =>
-                              setLimits((prev) => ({ ...prev, [row.crmUserId]: e.target.value }))
-                            }
-                            disabled={busy !== null}
-                            className="h-8 w-24 rounded-md border border-border bg-background px-2 text-center text-xs font-semibold text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
-                            aria-label={`Limite de ${row.name}`}
-                          />
+                          <div className="flex flex-col items-center">
+                            <input
+                              type="number"
+                              min={1}
+                              max={10000}
+                              value={limits[row.crmUserId] ?? String(row.monthlyLimit)}
+                              onChange={(e) =>
+                                setLimits((prev) => ({ ...prev, [row.crmUserId]: e.target.value }))
+                              }
+                              disabled={busy !== null}
+                              className={cn(
+                                "h-8 w-24 rounded-md border bg-background px-2 text-center text-xs font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50",
+                                isLimitChanged
+                                  ? "border-primary ring-1 ring-primary/40 bg-primary/[0.04]"
+                                  : "border-border",
+                              )}
+                              aria-label={`Limite de ${row.name}`}
+                            />
+
+                            {/* Dica interativa para aplicar à equipe ou a todos */}
+                            {isLimitChanged && limitIsValid && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  applyBatchLimit(
+                                    nextLimit,
+                                    isFilteredByTeam ? "team" : "all",
+                                    isFilteredByTeam ? teamFilter : undefined,
+                                  )
+                                }
+                                className="mt-1.5 inline-flex max-w-[200px] items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary transition-all hover:bg-primary/20 hover:border-primary"
+                                title={
+                                  isFilteredByTeam
+                                    ? `Clique para aplicar ${nextLimit} para todos os ${teamCount} consultores da equipe ${targetTeamName}`
+                                    : `Clique para aplicar ${nextLimit} para todos os ${totalCount} consultores`
+                                }
+                              >
+                                <Sparkles className="size-2.5 shrink-0" />
+                                <span className="truncate">
+                                  {isFilteredByTeam
+                                    ? `Aplicar para equipe (${teamCount})`
+                                    : `Aplicar para todos (${totalCount})`}
+                                </span>
+                              </button>
+                            )}
+                          </div>
                         </td>
 
                         {/* Ações */}
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-1.5">
+                            {/* Salvar apenas este */}
                             <button
                               type="button"
                               onClick={() =>
@@ -577,12 +673,37 @@ export function OwnerManagementPanel() {
                               }
                               disabled={busy !== null || !isLimitChanged}
                               className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-all hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
-                              title="Salvar novo limite"
+                              title="Salvar apenas para este consultor"
                             >
                               <Save className="size-3" />
                               Salvar
                             </button>
 
+                            {/* Botão contextual para aplicar em lote */}
+                            {isLimitChanged && limitIsValid && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  applyBatchLimit(
+                                    nextLimit,
+                                    isFilteredByTeam ? "team" : "all",
+                                    isFilteredByTeam ? teamFilter : undefined,
+                                  )
+                                }
+                                disabled={busy !== null}
+                                className="inline-flex h-8 items-center gap-1 rounded-md border border-primary/50 bg-primary/15 px-2.5 text-xs font-semibold text-primary transition-all hover:bg-primary/25 disabled:opacity-40"
+                                title={
+                                  isFilteredByTeam
+                                    ? `Aplicar ${nextLimit} para toda a equipe ${targetTeamName} (${teamCount} consultores)`
+                                    : `Aplicar ${nextLimit} para todos os ${totalCount} consultores`
+                                }
+                              >
+                                <Users className="size-3" />
+                                {isFilteredByTeam ? "Equipe inteira" : "Aplicar a todos"}
+                              </button>
+                            )}
+
+                            {/* Zerar */}
                             <button
                               type="button"
                               onClick={() => {

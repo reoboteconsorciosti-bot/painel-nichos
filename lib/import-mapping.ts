@@ -37,7 +37,7 @@ export function suggestMapping(headers: string[]): ColumnMapping {
   }))
 }
 
-export function validateMapping(input: unknown, headers: string[], forceState = ""): ColumnMapping {
+export function validateMapping(input: unknown, headers: string[], forceState = "", requireState = true): ColumnMapping {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Mapeie as colunas da planilha.")
   const entries = Object.entries(input)
   const seen = new Set<string>()
@@ -52,7 +52,7 @@ export function validateMapping(input: unknown, headers: string[], forceState = 
   }
   if (!seen.has("phone")) throw new Error("Escolha a coluna de telefone / WhatsApp.")
   if (!seen.has("name")) throw new Error("Escolha a coluna de nome do contato.")
-  if (!seen.has("state") && !forceState.trim()) throw new Error("Mapeie o estado ou informe um estado para toda a planilha.")
+  if (requireState && !seen.has("state") && !forceState.trim()) throw new Error("Mapeie o estado ou informe um estado para toda a planilha.")
   return Object.fromEntries(entries) as ColumnMapping
 }
 

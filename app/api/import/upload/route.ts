@@ -132,6 +132,7 @@ export async function POST(req: Request) {
   let uploadedPath: string | null = null
   let crmImportRows: Array<Record<string, string>> | null = null
   let importFingerprint = ""
+  let etlCompleted = false
   let existingPhonesBeforeImport = new Set<string>()
   try {
     const sourceRoot = process.env.LEADS_SOURCE_DIR
@@ -168,13 +169,14 @@ export async function POST(req: Request) {
     const mappingJson = form.get("columnMapping")
     if (mappingJson !== null) {
       try {
+        const isBlackFriday = String(form.get("nichoFolder") ?? "").toLowerCase().includes("black-friday")
         const parsed = readImportSpreadsheet(fileBuffer, String(form.get("sheetName") ?? ""), Number(form.get("headerRow") ?? 1))
-        const mapping = validateMapping(JSON.parse(String(mappingJson)), parsed.headers, String(form.get("forceState") ?? ""))
+        const mapping = validateMapping(JSON.parse(String(mappingJson)), parsed.headers, String(form.get("forceState") ?? ""), !isBlackFriday)
         const rows = parsed.rows.map((row, index) => {
           try {
             const mapped = mapImportRow(row, mapping)
             if (!mapped.name) throw new Error("O nome do contato está vazio.")
-            if (!mapped.state && !String(form.get("forceState") ?? "").trim()) throw new Error("Informe o estado do contato.")
+            if (!isBlackFriday && !mapped.state && !String(form.get("forceState") ?? "").trim()) throw new Error("Informe o estado do contato.")
             return mapped
           } catch (error) { throw new Error(`Linha ${index + parsed.headerRow + 1}: ${error instanceof Error ? error.message : "Dados inválidos."}`) }
         })
@@ -271,8 +273,9 @@ export async function POST(req: Request) {
       console.error("[UPLOAD] Error parsing response:", e)
       return null
     })) as unknown
+    etlCompleted = proxiedRes.ok && !!responseJson && typeof responseJson === "object" && (responseJson as { ok?: unknown }).ok === true
 
-    let crmImport: { configured: boolean; contactsCount: number; contactBatchesQueued: number; dealsCount: number; dealJobsQueued: number; batchId?: number } | null = null
+    let crmImport: { configured: boolean; contactsCount: number; contactBatchesQueued: number; dealsCount: number; dealJobsQueued: number; batchId?: number; queueError?: boolean } | null = null
     if (proxiedRes.ok && responseJson && typeof responseJson === "object" && (responseJson as { ok?: unknown }).ok === true && crmImportRows) {
       const contactsByPhone = new Map<string, Record<string, string>>()
       for (const row of crmImportRows) {
@@ -327,25 +330,34 @@ export async function POST(req: Request) {
         }] : []
       })
       const deliveryJobs = [...contactJobs, ...deals]
-      if (deliveryJobs.length) await prisma.crmDelivery.createMany({ data: deliveryJobs, skipDuplicates: true })
       const importedPhones = [...contactsByPhone.keys()]
       const importedLeads = []
       for (let index = 0; index < importedPhones.length; index += 500) {
         importedLeads.push(...await prisma.lead.findMany({ where: { phone: { in: importedPhones.slice(index, index + 500) } }, select: { id: true, phone: true } }))
       }
       const newlyCreatedLeadIds = importedLeads.filter(lead => lead.phone && !existingPhonesBeforeImport.has(lead.phone)).map(lead => lead.id)
+      const previousBatch = await prisma.importBatch.findUnique({ where: { fingerprint: importFingerprint } })
+      const createData = { fileName: originalName, niche: targetNichoFolder, importedCount: newlyCreatedLeadIds.length, existingCount: importedLeads.length - newlyCreatedLeadIds.length, leadIds: newlyCreatedLeadIds, fingerprint: importFingerprint, createdBy: user.id }
       const batch = await prisma.importBatch.upsert({
         where: { fingerprint: importFingerprint },
-        create: { fileName: originalName, niche: targetNichoFolder, importedCount: newlyCreatedLeadIds.length, existingCount: importedLeads.length - newlyCreatedLeadIds.length, leadIds: newlyCreatedLeadIds, fingerprint: importFingerprint, createdBy: user.id },
-        update: { fileName: originalName, niche: targetNichoFolder, importedCount: newlyCreatedLeadIds.length, existingCount: importedLeads.length - newlyCreatedLeadIds.length, leadIds: newlyCreatedLeadIds, status: "completed", removedCount: 0, undoneAt: null },
+        create: createData,
+        update: previousBatch?.status === "undone"
+          ? { ...createData, status: "completed", removedCount: 0, undoneAt: null }
+          : { fileName: originalName, niche: targetNichoFolder, status: "completed" },
       })
+      let queueError = false
+      if (deliveryJobs.length) {
+        try { await prisma.crmDelivery.createMany({ data: deliveryJobs, skipDuplicates: true }) }
+        catch (error) { queueError = true; console.error("[UPLOAD] CRM queue could not be recorded after the panel import", error) }
+      }
       crmImport = {
         configured: !!(process.env.CRM_API_URL?.trim() && process.env.CRM_API_KEY?.trim()),
         contactsCount: contacts.length,
-        contactBatchesQueued: contactJobs.length,
+        contactBatchesQueued: queueError ? 0 : contactJobs.length,
         dealsCount: deals.length,
-        dealJobsQueued: deals.length,
+        dealJobsQueued: queueError ? 0 : deals.length,
         batchId: batch.id,
+        queueError,
       }
     }
 
@@ -365,7 +377,13 @@ export async function POST(req: Request) {
     if (e instanceof Error && e.stack) {
       console.error("[UPLOAD] Stack:", e.stack)
     }
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 })
+    return NextResponse.json({
+      ok: false,
+      partial: etlCompleted,
+      error: etlCompleted
+        ? "O processamento do Painel terminou, mas falhou ao registrar o histórico da importação. Os contatos podem já estar gravados; confira antes de reenviar."
+        : "Não foi possível concluir a importação. Confira o arquivo e tente novamente.",
+    }, { status: 500 })
   } finally {
     if (uploadedPath) {
       // Limpa o arquivo temporário para não acumular uploads.

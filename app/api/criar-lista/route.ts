@@ -232,9 +232,20 @@ function mapFolderToNicheId(folderName: string): string {
   return folderName
 }
 
+const VALID_UFS = new Set(["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
+const STATE_NAME_TO_UF: Record<string, string> = {
+    "ACRE": "AC", "ALAGOAS": "AL", "AMAPA": "AP", "AMAZONAS": "AM", "BAHIA": "BA", "CEARA": "CE",
+    "DISTRITO FEDERAL": "DF", "ESPIRITO SANTO": "ES", "GOIAS": "GO", "MARANHAO": "MA", "MATO GROSSO": "MT",
+    "MATO GROSSO DO SUL": "MS", "MINAS GERAIS": "MG", "PARA": "PA", "PARAIBA": "PB", "PARANA": "PR",
+    "PERNAMBUCO": "PE", "PIAUI": "PI", "RIO DE JANEIRO": "RJ", "RIO GRANDE DO NORTE": "RN",
+    "RIO GRANDE DO SUL": "RS", "RONDONIA": "RO", "RORAIMA": "RR", "SANTA CATARINA": "SC",
+    "SAO PAULO": "SP", "SERGIPE": "SE", "TOCANTINS": "TO",
+}
+
 function normalizeUf(input: unknown): string {
-  const uf = normalizeUpper(input)
-  return uf.slice(0, 2)
+  const normalized = normalizeKey(normalizeUpper(input))
+  if (VALID_UFS.has(normalized)) return normalized
+  return STATE_NAME_TO_UF[normalized] ?? ""
 }
 
 function toOptionalNonEmptyString(input: unknown): string | undefined {

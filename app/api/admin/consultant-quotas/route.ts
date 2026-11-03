@@ -47,6 +47,7 @@ export async function GET(req: Request) {
 
 type UpdateBody = {
   crmUserId?: unknown
+  crmUserIds?: unknown
   monthlyLimit?: unknown
   resetUsage?: unknown
   supervisorsCanSeeCounts?: unknown
@@ -58,9 +59,34 @@ export async function PATCH(req: Request) {
   if (!isOwner(user)) return NextResponse.json({ ok: false, error: "owner_only" }, { status: 403 })
 
   const body = (await req.json().catch(() => ({}))) as UpdateBody
-  if (typeof body.supervisorsCanSeeCounts === "boolean" && !body.crmUserId) {
+  if (typeof body.supervisorsCanSeeCounts === "boolean" && !body.crmUserId && !body.crmUserIds) {
     await setSupervisorCountVisibility(body.supervisorsCanSeeCounts)
     return NextResponse.json({ ok: true, supervisorsCanSeeCounts: body.supervisorsCanSeeCounts })
+  }
+
+  // Atualização em lote (por equipe ou para todos)
+  if (Array.isArray(body.crmUserIds) && body.crmUserIds.length > 0) {
+    const ids = body.crmUserIds.map((id) => String(id ?? "").trim()).filter(Boolean)
+    const monthlyLimit = Number(body.monthlyLimit)
+    if (!Number.isSafeInteger(monthlyLimit) || monthlyLimit < 1 || monthlyLimit > 10000 || ids.length === 0) {
+      return NextResponse.json({ ok: false, error: "invalid_payload" }, { status: 400 })
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const crmUserId of ids) {
+          await tx.consultantQuota.upsert({
+            where: { crmUserId },
+            create: { crmUserId, monthlyLimit },
+            update: { monthlyLimit },
+          })
+        }
+      })
+      return NextResponse.json({ ok: true, updatedCount: ids.length, monthlyLimit })
+    } catch (error) {
+      console.error("[CONSULTANT_QUOTAS] Failed batch update", error)
+      return NextResponse.json({ ok: false, error: "failed_to_update_quota" }, { status: 500 })
+    }
   }
 
   const crmUserId = String(body.crmUserId ?? "").trim()
