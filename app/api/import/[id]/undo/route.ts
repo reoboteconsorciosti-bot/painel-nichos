@@ -14,14 +14,22 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     const result = await prisma.$transaction(async tx => {
       const batch = await tx.importBatch.findUnique({ where: { id } })
       if (!batch) return { error: "not_found" as const }
-      if (batch.status === "undone") return { error: "already_undone" as const }
+      const isBlackFridayBatch = batch.niche.toLowerCase().includes("black-friday")
+      if (batch.status === "undone" && (!isBlackFridayBatch || batch.removedCount >= batch.importedCount)) return { error: "already_undone" as const }
       const leadIds = Array.isArray(batch.leadIds) ? batch.leadIds.filter((value): value is number => Number.isInteger(value)) : []
-      const leads = await tx.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, blackFridayClaim: { select: { id: true } }, crmDeliveries: { select: { id: true }, take: 1 } } })
-      const removable = leads.filter(lead => !lead.blackFridayClaim && lead.crmDeliveries.length === 0).map(lead => lead.id)
+      const leads = await tx.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, blackFridayClaim: { select: { id: true } }, crmDeliveries: { select: { id: true }, take: 1 }, listaLeads: { select: { id: true }, take: 1 } } })
       await tx.crmDelivery.deleteMany({ where: { idempotencyKey: { startsWith: `import:${batch.fingerprint}:` }, status: "pending" } })
+      if (isBlackFridayBatch) {
+        await tx.crmDelivery.deleteMany({ where: { leadId: { in: leadIds }, idempotencyKey: { startsWith: "black-friday:" }, status: "pending" } })
+        await tx.blackFridayLead.deleteMany({ where: { leadId: { in: leadIds } } })
+      }
+      const removable = leads.filter(lead => !lead.crmDeliveries.length && !lead.listaLeads.length).map(lead => lead.id)
       const deleted = await tx.lead.deleteMany({ where: { id: { in: removable } } })
-      await tx.importBatch.update({ where: { id }, data: { status: "undone", removedCount: deleted.count, undoneAt: new Date() } })
-      return { removed: deleted.count, protected: leadIds.length - deleted.count }
+      const preserved = leads.filter(lead => !removable.includes(lead.id)).map(lead => lead.id)
+      if (isBlackFridayBatch && preserved.length) await tx.lead.updateMany({ where: { id: { in: preserved } }, data: { nicho: null } })
+      const removedCount = batch.removedCount + deleted.count
+      await tx.importBatch.update({ where: { id }, data: { status: "undone", removedCount, undoneAt: new Date() } })
+      return { removed: deleted.count, preserved: preserved.length, removedTotal: removedCount }
     })
     if ("error" in result) return NextResponse.json({ ok: false, error: result.error }, { status: result.error === "not_found" ? 404 : 409 })
     return NextResponse.json({ ok: true, ...result })
