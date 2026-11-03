@@ -7,7 +7,9 @@ export const runtime = "nodejs"
 
 export async function POST(req: Request) {
   const user = await getAuthenticatedUser(req)
-  if (!user || user.role !== "admin") return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
+  if (!user || user.role !== "admin" || !user.isOwner) {
+    return NextResponse.json({ ok: false, error: "forbidden_owner_only" }, { status: 403 })
+  }
   try {
     const form = await req.formData()
     const file = form.get("file")

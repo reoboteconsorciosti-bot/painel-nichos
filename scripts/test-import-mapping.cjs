@@ -118,12 +118,16 @@ test("worker envia descrição, trata 429 e não repete pedidos com resultado in
   process.env.CRM_API_URL = "https://crm.example.test"
   process.env.CRM_API_KEY = "test-key"
   try {
-    for (const mode of ["success", "rate-limit", "network", "server", "validation", "locked", "throttled", "patch"]) {
+    for (const mode of ["success", "rate-limit", "network", "server", "validation", "locked", "throttled", "patch", "contacts-bulk"]) {
       let stage = 0, request, calls = 0
       const updates = []
-      const job = { id: 1, ...buildCrmDelivery(mode === "patch" ? { ...lead, crmDealId: "cm-existing" } : lead, "medicos", "crm-ana") }
+      const delivery = mode === "contacts-bulk"
+        ? { method: "CONTACTS_BULK", payload: { contacts: [{ name: "Ana", phone: lead.phone }] } }
+        : buildCrmDelivery(mode === "patch" ? { ...lead, crmDealId: "cm-existing" } : lead, "medicos", "crm-ana")
+      const job = { id: 1, leadId: null, listaId: null, ...delivery }
       const tx = { $queryRaw: async () => [{ locked: mode !== "locked" }], crmDelivery: {
         updateMany: async () => ({}),
+        findMany: async () => [],
         findFirst: async () => ++stage === 1 ? mode === "throttled" ? { attemptedAt: new Date() } : null : stage === 2 ? null : job,
         update: async () => job,
       } }
@@ -133,12 +137,17 @@ test("worker envia descrição, trata 429 e não repete pedidos com resultado in
         request = { url, ...options }
         if (mode === "network") throw new Error("timeout")
         if (mode === "rate-limit") return new Response(null, { status: 429, headers: { "Retry-After": "60" } })
+        if (mode === "contacts-bulk") return Response.json({ success: true, data: { summary: { total: 2, created: 0, updated: 2, errors: 0 }, results: [] } })
         return Response.json(mode === "server" || mode === "validation" ? { success: false, error: "Falha" } : { success: true, data: { id: "cm-created", warnings: ["Aviso de responsável"] } }, { status: mode === "server" ? 500 : mode === "validation" ? 400 : 201 })
       }
       const worker = loader({ "@/lib/prisma": { prisma } })("lib/crm-delivery-worker.ts")
       await worker.processNextCrmDelivery()
       if (["locked", "throttled"].includes(mode)) { assert.equal(calls, 0); continue }
-      if (mode === "success" || mode === "patch") {
+      if (mode === "contacts-bulk") {
+        assert.equal(updates[0].status, "sent")
+        assert.equal(request.method, "POST")
+        assert.equal(request.url, "https://crm.example.test/api/v1/contacts/bulk")
+      } else if (mode === "success" || mode === "patch") {
         assert.equal(updates[0].status, "sent")
         assert.equal(updates[0].crmDealId, "cm-created")
         assert.deepEqual(updates[0].warnings, ["Aviso de responsável"])
@@ -170,9 +179,11 @@ test("upload usa exatamente o mapeamento confirmado e preserva descrição no ar
   process.env.LEADS_SOURCE_DIR = path.join(root, ".import-test")
   process.env.ETL_TOKEN = "test-token"
   let written, processed = 0
+  const queued = []
   const route = loader({
     "@/lib/auth": { getAuthenticatedUser: async () => ({ role: "admin" }) },
     "node:fs/promises": { access: async () => {}, mkdir: async () => {}, writeFile: async (_path, buffer) => { written = buffer }, unlink: async () => {} },
+    "@/lib/prisma": { prisma: { crmDelivery: { createMany: async ({ data }) => { queued.push(...data); return { count: data.length } } } } },
     "@/app/api/criar-lista/route": { POST: async request => {
       processed++
       const body = await request.json()
@@ -184,21 +195,31 @@ test("upload usa exatamente o mapeamento confirmado e preserva descrição no ar
       assert.equal(row.name, "Ana")
       assert.equal(row.phone, "65991234567")
       assert.equal(row.Lixo, undefined)
-      return Response.json({ ok: true, stats: { inseridos: 1 } })
+      return Response.json({ ok: true, stats: { inseridos: 0, ignoradosDuplicados: 2 } })
     } },
   })("app/api/import/upload/route.ts")
   try {
     const form = new FormData()
-    form.append("file", new File(["Cliente;Celular;UF;Interesse;Renda;Lixo\nAna;65991234567;MT;Imóvel;8.000;ignorar"], "diferente.csv"))
+    form.append("file", new File(["Cliente;Celular;UF;Interesse;Renda;Lixo\nAna;65991234567;MT;Imóvel;8.000;ignorar\nAna 2;65991234567;MT;Imóvel;9.000;ignorar"], "diferente.csv"))
     form.append("columnMapping", JSON.stringify(mapping))
     form.append("nichoFolder", "medicos")
     let response = await route.POST(new Request("http://localhost/api/import/upload", { method: "POST", body: form }))
     assert.equal(response.status, 200)
     assert.equal(processed, 1)
+    const result = await response.json()
+    assert.equal(result.stats.inseridos, 0, "os contatos existentes no Painel continuam fora da contagem de novos registros")
+    assert.equal(result.crmImport.contactsCount, 1, "o contato repetido no Painel ainda é sincronizado com o CRM")
+    assert.equal(result.crmImport.dealsCount, 1, "a linha duplicada no mesmo arquivo não cria outro negócio")
+    assert.equal(queued.length, 2)
+    assert.equal(queued[0].method, "CONTACTS_BULK")
+    assert.equal(queued[0].payload.contacts[0].name, "Ana")
+    assert.equal(queued[1].method, "POST")
+    assert.ok(queued[1].payload.description.includes("Renda: 8.000"))
     form.set("columnMapping", JSON.stringify({ ...mapping, Fantasma: "phone" }))
     response = await route.POST(new Request("http://localhost/api/import/upload", { method: "POST", body: form }))
     assert.equal(response.status, 400)
     assert.equal(processed, 1, "mapeamento inválido não pode chegar ao ETL")
+    assert.equal(queued.length, 2)
   } finally {
     if (previousRoot === undefined) delete process.env.LEADS_SOURCE_DIR; else process.env.LEADS_SOURCE_DIR = previousRoot
     if (previousToken === undefined) delete process.env.ETL_TOKEN; else process.env.ETL_TOKEN = previousToken

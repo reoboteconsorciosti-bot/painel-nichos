@@ -9,9 +9,10 @@ interface SidebarProps {
   activeTab: DashboardTab
   onTabChange: (tab: DashboardTab) => void
   isAdmin?: boolean
+  isOwner?: boolean
 }
 
-export function Sidebar({ activeTab, onTabChange, isAdmin = false }: SidebarProps) {
+export function Sidebar({ activeTab, onTabChange, isAdmin = false, isOwner = false }: SidebarProps) {
   return (
     <aside className="sticky top-0 flex h-screen w-16 shrink-0 flex-col items-center gap-6 border-r border-border bg-background py-6 md:w-20">
       <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/20 text-primary">
@@ -19,6 +20,7 @@ export function Sidebar({ activeTab, onTabChange, isAdmin = false }: SidebarProp
       </div>
 
       <nav className="mt-4 flex w-full flex-col gap-4 px-3" aria-label="Navegação principal">
+        {/* Dashboard - todos veem */}
         <button
           type="button"
           onClick={() => onTabChange("dashboard")}
@@ -34,22 +36,44 @@ export function Sidebar({ activeTab, onTabChange, isAdmin = false }: SidebarProp
           <LayoutDashboard className="size-5" />
         </button>
 
-        <button
-          type="button"
-          onClick={() => onTabChange("team")}
-          className={cn(
-            "flex h-12 w-full items-center justify-center rounded-xl transition-all",
-            activeTab === "team"
-              ? "bg-primary text-primary-foreground shadow-sm"
-              : "bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
-          )}
-          title={isAdmin ? "Equipe e limites" : "Minha equipe"}
-          aria-label={isAdmin ? "Equipe e limites" : "Minha equipe"}
-        >
-          <Users className="size-5" />
-        </button>
+        {/* Supervisor vê Minha Equipe (Users). Admin NÃO precisa deste ícone duplicado, pois tem o Painel Administrativo (Shield) */}
+        {!isAdmin && (
+          <button
+            type="button"
+            onClick={() => onTabChange("team")}
+            className={cn(
+              "flex h-12 w-full items-center justify-center rounded-xl transition-all",
+              activeTab === "team"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
+            )}
+            title="Minha equipe"
+            aria-label="Minha equipe"
+          >
+            <Users className="size-5" />
+          </button>
+        )}
 
+        {/* Painel Administrativo (Shield) - apenas Administradores / Donos */}
         {isAdmin && (
+          <button
+            type="button"
+            onClick={() => onTabChange("admin")}
+            className={cn(
+              "flex h-12 w-full items-center justify-center rounded-xl transition-all",
+              activeTab === "admin"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
+            )}
+            title="Painel Administrativo"
+            aria-label="Painel Administrativo"
+          >
+            <Shield className="size-5" />
+          </button>
+        )}
+
+        {/* Importação de Dados - APENAS Donos do CRM podem ver */}
+        {isOwner && (
           <button
             type="button"
             onClick={() => onTabChange("import")}
@@ -84,23 +108,6 @@ export function Sidebar({ activeTab, onTabChange, isAdmin = false }: SidebarProp
               <path d="M12 2v3"></path>
               <path d="M15 2v3"></path>
             </svg>
-          </button>
-        )}
-
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => onTabChange("admin")}
-            className={cn(
-              "flex h-12 w-full items-center justify-center rounded-xl transition-all",
-              activeTab === "admin"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
-            )}
-            title="Painel Administrativo"
-            aria-label="Painel Administrativo"
-          >
-            <Shield className="size-5" />
           </button>
         )}
       </nav>

@@ -338,7 +338,7 @@ export async function POST(req: Request) {
       if (enviarParaCrm) {
         const deliveries = leads.flatMap(lead => {
           const delivery = buildCrmDelivery(lead, nicho, consultantCrmId)
-          return delivery ? [{ leadId: lead.id, listaId: lista.id, consultantCrmId, ...delivery }] : []
+          return delivery ? [{ leadId: lead.id, listaId: lista.id, consultantCrmId, idempotencyKey: `list:${lista.id}:lead:${lead.id}`, ...delivery }] : []
         })
         if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
       }

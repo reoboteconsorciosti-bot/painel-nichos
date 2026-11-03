@@ -137,7 +137,7 @@ export async function POST(req: Request) {
             lead.dealDescription,
           ].filter(Boolean).join('\n')
           const delivery = buildCrmDelivery({ ...lead, dealDescription: description }, campaign.nicho, ownerId)
-          return delivery ? { leadId: lead.id, consultantCrmId: ownerId, ...delivery } : null
+          return delivery ? { leadId: lead.id, consultantCrmId: ownerId, idempotencyKey: `black-friday:${campaign.id}:lead:${lead.id}`, ...delivery } : null
         }).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
         if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
       }

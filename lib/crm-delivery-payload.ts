@@ -12,7 +12,7 @@ export type CrmLead = {
   crmDealId?: string | null
 }
 
-export function buildCrmDelivery(lead: CrmLead, nicho: string, ownerId: string) {
+export function buildCrmDelivery(lead: CrmLead, nicho: string, ownerId: string | null) {
   const description = lead.dealDescription?.trim()
   if (!description) return null
   if (lead.crmDealId) {
@@ -33,10 +33,10 @@ export function buildCrmDelivery(lead: CrmLead, nicho: string, ownerId: string) 
         ...(lead.city ? { city: lead.city } : {}),
         ...(lead.state ? { state: lead.state } : {}),
         ...(lead.company || lead.fantasy ? { company: lead.company || lead.fantasy } : {}),
-        ownerId,
+        ...(ownerId ? { ownerId } : {}),
         source,
       },
-      ownerId,
+      ...(ownerId ? { ownerId } : {}),
       description,
       source,
     },

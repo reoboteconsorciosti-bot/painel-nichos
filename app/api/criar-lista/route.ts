@@ -101,6 +101,11 @@ function normalizePhone(input: unknown): string {
   return digits
 }
 
+export function normalizeImportPhone(input: unknown): string | null {
+  const phone = normalizePhone(input)
+  return phone && isLikelyPhoneDigits(phone) ? phone : null
+}
+
 function isValidCpfDigits(digits: string): boolean {
   if (!/^\d{11}$/.test(digits)) return false
   if (/^(\d)\1{10}$/.test(digits)) return false

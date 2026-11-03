@@ -24,7 +24,7 @@ model Lead {
 
   listaLeads ListaLead[]
   blackFridayClaim BlackFridayLead?
-  crmDelivery CrmDelivery?
+  crmDeliveries CrmDelivery[]
 
   @@map("leads")
   @@index([city], map: "idx_leads_city")
@@ -34,7 +34,7 @@ model Lead {
 
 model CrmDelivery {
   id Int @id @default(autoincrement())
-  leadId Int @unique @map("lead_id")
+  leadId Int? @map("lead_id")
   listaId Int? @map("lista_id")
   consultantCrmId String @map("consultant_crm_id")
   payload Json
@@ -47,7 +47,8 @@ model CrmDelivery {
   nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
-  lead Lead @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  idempotencyKey String @unique @map("idempotency_key")
+  lead Lead? @relation(fields: [leadId], references: [id], onDelete: Restrict)
   lista Lista? @relation(fields: [listaId], references: [id], onDelete: Restrict)
 
   @@index([status, nextAttemptAt], map: "idx_crm_deliveries_pending")
@@ -64,6 +65,24 @@ model ImportLog {
   createdAt  DateTime @default(now()) @map("created_at")
 
   @@map("import_logs")
+}
+
+model ImportBatch {
+  id             Int      @id @default(autoincrement())
+  fileName       String   @map("file_name")
+  niche          String
+  importedCount  Int      @default(0) @map("imported_count")
+  existingCount  Int      @default(0) @map("existing_count")
+  leadIds        Json     @default("[]") @map("lead_ids")
+  fingerprint    String   @unique
+  removedCount   Int      @default(0) @map("removed_count")
+  status         String   @default("completed")
+  createdBy      String   @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  undoneAt       DateTime? @map("undone_at")
+
+  @@map("import_batches")
+  @@index([createdAt])
 }
 
 model Lista {

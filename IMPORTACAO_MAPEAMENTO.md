@@ -2,7 +2,7 @@
 
 Fluxo: Importar contatos → escolher arquivo e nicho → mapear colunas → conferir a prévia → importar. Não há escrita no banco na etapa de prévia. São aceitos XLSX e CSV, até 20 MB e 5.000 linhas de dados, com seleção de aba e linha de cabeçalho. Cabeçalhos duplicados devem ser corrigidos na origem.
 
-Nome, telefone e estado são necessários no mapeamento; o estado pode ser informado uma vez para toda a planilha. Várias colunas podem usar o destino **Descrição do negócio**: os valores não vazios são unidos com os nomes das colunas, uma informação por linha. Colunas marcadas como **Ignorar** não são importadas. Telefones existentes continuam sendo ignorados: a importação não atualiza nem apaga seus dados.
+Nome, telefone e estado são necessários no mapeamento; o estado pode ser informado uma vez para toda a planilha. Várias colunas podem usar o destino **Descrição do negócio**: os valores não vazios são unidos com os nomes das colunas, uma informação por linha. Colunas marcadas como **Ignorar** não são importadas. Se um telefone já existe no Painel, sua linha não cria um segundo registro nem altera os dados do registro interno; ela continua sendo enviada ao CRM.
 
 O mapeamento é validado novamente no servidor contra o arquivo enviado. O cabeçalho, a aba e o mapeamento confirmados são usados na importação. A normalização existente de telefones, cidades e estados continua sendo aplicada. Nome, telefone, empresa, cidade, estado, e-mail, cargo, descrição e ID de negócio são preservados até a geração da lista.
 
@@ -20,20 +20,20 @@ Fonte consultada em 03/11/2026: https://crm.reoboteconsorcios.com.br/docs
 
 ## Envio e acompanhamento
 
-A importação salva os contatos no painel; **não envia ao CRM**. O envio ocorre ao gerar uma lista com **Enviar ao CRM** ativado.
+A importação envia todos os contatos válidos ao CRM, inclusive os telefones que o Painel já tinha. A API do CRM atualiza o contato existente pelo telefone/WhatsApp. Telefones repetidos dentro do mesmo arquivo são agrupados para evitar criar negócios em duplicidade.
 
-- Sem descrição: mantém o envio de contatos em lote.
-- Com descrição e sem ID de negócio: enfileira a criação de um negócio, com o consultor escolhido em `ownerId` do contato e do negócio.
-- Com descrição e ID de negócio: enfileira o acréscimo da nota nesse negócio. Não troca seu responsável nem cria outro negócio.
-- Na campanha Black Friday, os dados mapeados também são preservados e o envio usa a mesma fila. Novos negócios incluem os dados da campanha e a descrição importada.
+- Contatos são agrupados em lotes de até 500 e enfileirados para `POST /api/v1/contacts/bulk`. A fila respeita o limite documentado de 10 chamadas por minuto.
+- Com descrição e sem ID de negócio, a importação também enfileira a criação de um negócio com a descrição mapeada.
+- Com descrição e ID de negócio, a importação enfileira o acréscimo da nota nesse negócio. Não troca seu responsável nem cria outro negócio.
+- Gerar uma lista continua permitindo sincronizar o contato com o consultor escolhido e criar o negócio naquele momento. Na campanha Black Friday, os dados mapeados também são preservados e o envio usa a mesma fila.
 
-A fila é gravada na mesma transação da distribuição. Há uma entrega por lead, protegida por índice único: redistribuir o mesmo lead não recria o negócio ou repete sua nota automaticamente. A aplicação processa a fila em segundo plano, independente da aba do navegador, limitando a aproximadamente uma chamada a cada 2,3 segundos e coordenando réplicas por lock do PostgreSQL. Uma resposta 429 pausa a fila conforme `Retry-After`.
+A fila é idempotente por arquivo, mapeamento e linha para importações, e por lista/lead para a geração de listas. A aplicação processa a fila em segundo plano, independente da aba do navegador, coordena réplicas com um lock do PostgreSQL e respeita os limites de contatos em lote e de negócios. Uma resposta 429 pausa o endpoint correspondente conforme `Retry-After`.
 
 Erros de validação ficam como `failed`. Timeout, falha de rede, resposta ambígua ou erro 5xx ficam como `needs_review`: é necessário conferir o CRM antes de reenviar, porque a API não documenta uma chave de idempotência para criação de negócios ou acréscimo de notas. Pedidos interrompidos por reinício também não são reenviados cegamente. Não há retry automático para resultados incertos. Avisos de responsável são preservados e mostrados no painel.
 
 ## Deploy
 
-1. Aplicar a migration `20261103_import_mapping_crm_descriptions` no PostgreSQL **antes de iniciar a nova versão**. O Prisma seleciona os novos campos de leads também nos fluxos existentes.
+1. Aplicar as migrations `20261103_import_mapping_crm_descriptions` e `20261103_import_mapping_crm_descriptions_2_allow_crm_import_queue` no PostgreSQL **antes de iniciar a nova versão**. A segunda migration permite que a fila guarde lotes de contatos sem depender de uma linha do Painel.
 2. Gerar o Prisma Client (`npx prisma generate`, já executado no Dockerfile).
 3. Manter `CRM_API_URL` e `CRM_API_KEY` configurados. A importação ainda usa `LEADS_SOURCE_DIR` e `ETL_TOKEN` no processador existente.
 4. O worker inicia automaticamente no servidor Node em produção. `CRM_DELIVERY_WORKER_ENABLED=false` o desativa. Para desenvolvimento, ele só inicia com `CRM_DELIVERY_WORKER_ENABLED=true`.

@@ -7,6 +7,10 @@ import { getAuthenticatedUser } from "@/lib/auth"
 import * as XLSX from "xlsx"
 import { readImportSpreadsheet } from "@/lib/import-spreadsheet"
 import { mapImportRow, validateMapping, MAX_IMPORT_BYTES } from "@/lib/import-mapping"
+import { createHash } from "node:crypto"
+import { prisma } from "@/lib/prisma"
+import { normalizeImportPhone } from "@/app/api/criar-lista/route"
+import { buildCrmDelivery } from "@/lib/crm-delivery-payload"
 
 export const runtime = "nodejs"
 
@@ -122,10 +126,13 @@ function inferNichoFolderFromFileName(fileName: string): string {
 
 export async function POST(req: Request) {
   const user = await getAuthenticatedUser(req)
-  if (!user || user.role !== "admin") {
-    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
+  if (!user || user.role !== "admin" || !user.isOwner) {
+    return NextResponse.json({ ok: false, error: "forbidden_owner_only" }, { status: 403 })
   }
   let uploadedPath: string | null = null
+  let crmImportRows: Array<Record<string, string>> | null = null
+  let importFingerprint = ""
+  let existingPhonesBeforeImport = new Set<string>()
   try {
     const sourceRoot = process.env.LEADS_SOURCE_DIR
     const etlToken = process.env.ETL_TOKEN
@@ -171,6 +178,17 @@ export async function POST(req: Request) {
             return mapped
           } catch (error) { throw new Error(`Linha ${index + parsed.headerRow + 1}: ${error instanceof Error ? error.message : "Dados inválidos."}`) }
         })
+        crmImportRows = rows
+        const validPhones = [...new Set(rows.map(row => normalizeImportPhone(row.phone)).filter((phone): phone is string => !!phone))]
+        for (let index = 0; index < validPhones.length; index += 500) {
+          const existing = await prisma.lead.findMany({ where: { phone: { in: validPhones.slice(index, index + 500) } }, select: { phone: true } })
+          existing.forEach(lead => { if (lead.phone) existingPhonesBeforeImport.add(lead.phone) })
+        }
+        importFingerprint = createHash("sha256")
+          .update(fileBuffer)
+          .update(String(mappingJson))
+          .update([parsed.sheetName, parsed.headerRow, String(form.get("nichoFolder") ?? ""), String(form.get("forceCity") ?? ""), String(form.get("forceState") ?? "")].join(":"))
+          .digest("hex")
         const workbook = XLSX.utils.book_new()
         XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Contatos")
         fileBuffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" })
@@ -254,9 +272,88 @@ export async function POST(req: Request) {
       return null
     })) as unknown
 
+    let crmImport: { configured: boolean; contactsCount: number; contactBatchesQueued: number; dealsCount: number; dealJobsQueued: number; batchId?: number } | null = null
+    if (proxiedRes.ok && responseJson && typeof responseJson === "object" && (responseJson as { ok?: unknown }).ok === true && crmImportRows) {
+      const contactsByPhone = new Map<string, Record<string, string>>()
+      for (const row of crmImportRows) {
+        const phone = normalizeImportPhone(row.phone)
+        if (phone && row.name && !contactsByPhone.has(phone)) contactsByPhone.set(phone, { ...row, phone })
+      }
+      const contacts = [...contactsByPhone.values()].map(row => ({
+        name: row.name,
+        phone: row.phone,
+        whatsapp: row.phone,
+        ...(row.email ? { email: row.email } : {}),
+        ...(row.jobTitle ? { jobTitle: row.jobTitle } : {}),
+        ...(row.city || forceCity ? { city: forceCity || row.city } : {}),
+        ...(row.state || forceState ? { state: forceState || row.state } : {}),
+        ...(row.company || row.fantasy ? { company: row.company || row.fantasy } : {}),
+        source: "Painel Nichos - " + targetNichoFolder,
+      }))
+      const contactJobs = []
+      for (let index = 0; index < contacts.length; index += 500) {
+        const batch = contacts.slice(index, index + 500)
+        contactJobs.push({
+          leadId: null,
+          listaId: null,
+          consultantCrmId: "import",
+          idempotencyKey: "import:" + importFingerprint + ":contacts:" + index / 500,
+          method: "CONTACTS_BULK",
+          payload: { contacts: batch },
+        })
+      }
+      const deals = contacts.flatMap((contact, index) => {
+        const row = contactsByPhone.get(contact.phone)!
+        if (!row.dealDescription) return []
+        const delivery = buildCrmDelivery({
+          id: index + 1,
+          name: contact.name,
+          phone: contact.phone,
+          city: contact.city ?? null,
+          state: contact.state ?? null,
+          company: contact.company ?? null,
+          fantasy: row.fantasy ?? null,
+          email: contact.email ?? null,
+          jobTitle: contact.jobTitle ?? null,
+          dealDescription: row.dealDescription,
+          crmDealId: row.crmDealId ?? null,
+        }, targetNichoFolder, null)
+        return delivery ? [{
+          leadId: null,
+          listaId: null,
+          consultantCrmId: "import",
+          idempotencyKey: "import:" + importFingerprint + ":deal:" + contact.phone,
+          ...delivery,
+        }] : []
+      })
+      const deliveryJobs = [...contactJobs, ...deals]
+      if (deliveryJobs.length) await prisma.crmDelivery.createMany({ data: deliveryJobs, skipDuplicates: true })
+      const importedPhones = [...contactsByPhone.keys()]
+      const importedLeads = []
+      for (let index = 0; index < importedPhones.length; index += 500) {
+        importedLeads.push(...await prisma.lead.findMany({ where: { phone: { in: importedPhones.slice(index, index + 500) } }, select: { id: true, phone: true } }))
+      }
+      const newlyCreatedLeadIds = importedLeads.filter(lead => lead.phone && !existingPhonesBeforeImport.has(lead.phone)).map(lead => lead.id)
+      const batch = await prisma.importBatch.upsert({
+        where: { fingerprint: importFingerprint },
+        create: { fileName: originalName, niche: targetNichoFolder, importedCount: newlyCreatedLeadIds.length, existingCount: importedLeads.length - newlyCreatedLeadIds.length, leadIds: newlyCreatedLeadIds, fingerprint: importFingerprint, createdBy: user.id },
+        update: { fileName: originalName, niche: targetNichoFolder, importedCount: newlyCreatedLeadIds.length, existingCount: importedLeads.length - newlyCreatedLeadIds.length, leadIds: newlyCreatedLeadIds, status: "completed", removedCount: 0, undoneAt: null },
+      })
+      crmImport = {
+        configured: !!(process.env.CRM_API_URL?.trim() && process.env.CRM_API_KEY?.trim()),
+        contactsCount: contacts.length,
+        contactBatchesQueued: contactJobs.length,
+        dealsCount: deals.length,
+        dealJobsQueued: deals.length,
+        batchId: batch.id,
+      }
+    }
+
     return NextResponse.json(
       {
         ...(responseJson && typeof responseJson === "object" ? responseJson : { ok: proxiedRes.ok }),
+        crmImport,
+        importBatchId: proxiedRes.ok && responseJson && typeof responseJson === "object" && (responseJson as { ok?: unknown }).ok === true && crmImportRows ? (await prisma.importBatch.findUnique({ where: { fingerprint: importFingerprint }, select: { id: true } }))?.id ?? null : null,
         uploadedFile: storedFileName,
         targetNichoFolder,
       },

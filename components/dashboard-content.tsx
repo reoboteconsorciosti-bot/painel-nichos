@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Search, SlidersHorizontal, LayoutGrid, Check, FileText } from "lucide-react"
 import { NICHES } from "@/lib/data"
 import type { Consultant } from "@/lib/data"
@@ -75,6 +75,7 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
   const [lastCreated, setLastCreated] = useState<ScheduleEntry | null>(null)
   const [generatedLeadsByEntryId, setGeneratedLeadsByEntryId] = useState<Record<string, GeneratedLead[]>>({})
   const [globalCounts, setGlobalCounts] = useState<Record<string, number> | null>(null)
+  const [allowedNiches, setAllowedNiches] = useState<string[] | null>(null)
 
   useEffect(() => {
     fetch("/api/leads-availability/all")
@@ -82,6 +83,15 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
       .then(data => {
         if (data && data.ok && data.countsVisible !== false && data.counts) {
           setGlobalCounts(data.counts)
+        }
+      })
+      .catch(() => {})
+
+    fetch("/api/admin/niche-visibility")
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.ok && Array.isArray(data.allowedNiches)) {
+          setAllowedNiches(data.allowedNiches)
         }
       })
       .catch(() => {})
@@ -94,7 +104,12 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
     return nichoId
   }
 
-  const filteredNiches = NICHES.filter((niche) =>
+  const availableNiches = useMemo(() => {
+    if (!allowedNiches) return NICHES
+    return NICHES.filter((n) => allowedNiches.includes(n.id))
+  }, [allowedNiches])
+
+  const filteredNiches = availableNiches.filter((niche) =>
     niche.label.toLowerCase().includes(search.toLowerCase()) ||
     niche.description.toLowerCase().includes(search.toLowerCase())
   )
@@ -523,7 +538,7 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5">
           <LayoutGrid className="size-4 text-primary" />
           <span className="text-sm text-muted-foreground">
-            <span className="font-semibold text-foreground">{NICHES.length}</span> nichos disponiveis
+            <span className="font-semibold text-foreground">{availableNiches.length}</span> nichos disponiveis
           </span>
         </div>
       </div>

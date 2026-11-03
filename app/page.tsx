@@ -103,6 +103,7 @@ export default function Page() {
         activeTab={activeTab}
         onTabChange={handleTabChange}
         isAdmin={currentUser?.role === "admin"}
+        isOwner={currentUser?.isOwner === true}
       />
       {/* Conteúdo Principal */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
@@ -155,7 +156,16 @@ export default function Page() {
           ) : activeTab === "admin" ? (
             <OwnerManagementPanel />
           ) : activeTab === "import" ? (
-            <ImportPanel />
+            currentUser.isOwner ? (
+              <ImportPanel />
+            ) : (
+              <div className="flex h-full items-center justify-center p-6 text-center">
+                <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-6 text-destructive max-w-md mx-auto">
+                  <p className="font-semibold text-base mb-1">Acesso Restrito</p>
+                  <p className="text-sm text-muted-foreground">Apenas Donos do CRM têm permissão para acessar importação de dados.</p>
+                </div>
+              </div>
+            )
           ) : null}
         </main>
       </div>
