@@ -101,7 +101,7 @@ export async function POST(req: Request) {
     stage = "allocate_leads"
     const created = await prisma.$transaction(async (tx) => {
       // Serialize campaign allocations with regular list creation so a lead can only be claimed once.
-      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(${CLAIM_LOCK_KEY}, 1)`)
+      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(${CLAIM_LOCK_KEY}::integer, 1::integer)`)
 
       const consultant = await tx.consultant.findFirst({
         where: { id: { equals: consultantId, in: allowedConsultants.map((entry) => entry.id) }, ...(user.role === "admin" ? {} : { supervisorId: user.id }) },
