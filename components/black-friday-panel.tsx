@@ -80,7 +80,20 @@ export function BlackFridayPanel() {
         }),
       })
       const result = await response.json()
-      if (!response.ok || !result.ok) throw new Error(result.error === "no_leads_available" ? "Não há mais leads disponíveis." : result.error ?? "Falha ao liberar os leads.")
+      if (!response.ok || !result.ok) {
+        const friendlyError = result.error === "no_leads_available"
+          ? "Não há mais leads disponíveis. Atualize a campanha para conferir a quantidade."
+          : result.error === "consultant_outside_team"
+            ? "Esse consultor não está mais disponível para sua equipe. Atualize a tela e escolha outro."
+            : result.error === "campaign_not_active"
+              ? "A campanha não está ativa neste momento. Atualize a tela ou fale com o administrador."
+              : result.error === "failed_to_assign_leads"
+                ? sendToCrm
+                  ? "Não conseguimos confirmar a liberação. Confira a lista de leads antes de tentar novamente."
+                  : "Não conseguimos liberar os leads. Nenhum envio ao CRM foi solicitado; tente novamente."
+                : result.error ?? "Não foi possível liberar os leads."
+        throw new Error(friendlyError)
+      }
       const crm = result.crm as { configured?: boolean; queuedCount?: number; createdCount?: number; ignoredCount?: number; warnings?: string[] } | null
       setNotice(sendToCrm
         ? crm?.configured

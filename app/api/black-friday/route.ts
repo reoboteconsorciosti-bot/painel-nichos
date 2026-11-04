@@ -83,14 +83,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "invalid_payload" }, { status: 400 })
   }
 
+  let stage = "load_campaign"
   try {
     const campaign = await getActiveCampaign()
     if (!campaign) return NextResponse.json({ ok: false, error: "campaign_not_active" }, { status: 409 })
-    const allowedConsultants = await syncCRMConsultants(user)
+    stage = "validate_consultant"
+    const allowedConsultants = sendCRM
+      ? await syncCRMConsultants(user)
+      : (await prisma.consultant.findMany({
+        where: user.role === "admin" ? {} : { supervisorId: user.id },
+        select: { id: true, name: true, supervisorId: true, crmMemberId: true },
+      })).map((consultant) => ({ ...consultant, crmUserId: consultant.crmMemberId ?? "", teamId: null, teamName: "", supervisorName: "" }))
     if (!allowedConsultants.some((consultant) => consultant.id === consultantId)) {
       return NextResponse.json({ ok: false, error: "consultant_outside_team" }, { status: 403 })
     }
 
+    stage = "allocate_leads"
     const created = await prisma.$transaction(async (tx) => {
       // Serialize campaign allocations with regular list creation so a lead can only be claimed once.
       await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(${CLAIM_LOCK_KEY}, 1)`)
@@ -127,7 +135,8 @@ export async function POST(req: Request) {
       })
 
       if (sendCRM) {
-        const ownerId = allowedConsultants.find(entry => entry.id === consultant.id)!.crmUserId
+        const ownerId = allowedConsultants.find(entry => entry.id === consultant.id)?.crmUserId
+        if (!ownerId) throw new Error("consultant_crm_id_missing")
         const deliveries = leads.map(lead => {
           const description = lead.crmDealId ? lead.dealDescription : [
             'Campanha: ' + campaign.name,
@@ -144,6 +153,7 @@ export async function POST(req: Request) {
       return { consultant, leads, assignedAt }
     })
 
+    stage = sendCRM ? "count_crm_queue" : "complete_assignment"
     const crmResult = sendCRM ? {
       configured: !!(process.env.CRM_API_URL?.trim() && process.env.CRM_API_KEY?.trim()),
       queuedCount: await prisma.crmDelivery.count({ where: { leadId: { in: created.leads.map(lead => lead.id) }, status: { in: ['pending', 'sending'] } } }),
@@ -162,7 +172,7 @@ export async function POST(req: Request) {
     const message = error instanceof Error ? error.message : String(error)
     if (message === "consultant_outside_team") return NextResponse.json({ ok: false, error: message }, { status: 403 })
     if (message === "no_leads_available") return NextResponse.json({ ok: false, error: message }, { status: 409 })
-    console.error("[BLACK_FRIDAY] Failed to assign campaign leads", error)
+    console.error(`[BLACK_FRIDAY] Failed to assign campaign leads at ${stage}`, error)
     return NextResponse.json({ ok: false, error: "failed_to_assign_leads" }, { status: 500 })
   }
 }
