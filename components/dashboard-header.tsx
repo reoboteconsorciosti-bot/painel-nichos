@@ -1,6 +1,6 @@
 "use client"
 
-import { MapPin, User, LogOut } from "lucide-react"
+import { MapPin, User, LogOut, ArrowLeft } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { type SupervisorConfig } from "@/lib/data"
 
@@ -24,6 +24,13 @@ export function DashboardHeader({ onLogout, user }: DashboardHeaderProps) {
         </div>
 
         <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+          <a
+            href="/api/crm/open"
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
+          >
+            <ArrowLeft className="size-4" />
+            <span>Voltar ao CRM</span>
+          </a>
           <Badge variant="outline" className="hidden sm:inline-flex gap-1.5 px-3 py-1.5 text-xs text-muted-foreground border-border">
             <MapPin className="size-3" />
             Brasil

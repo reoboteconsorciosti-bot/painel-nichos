@@ -27,7 +27,7 @@ export function BlackFridayPanel() {
   const [loading, setLoading] = useState(true)
   const [selectedConsultant, setSelectedConsultant] = useState("")
   const [quantity, setQuantity] = useState("")
-  const [sendToCrm, setSendToCrm] = useState(true)
+  const [sendToCrm, setSendToCrm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
@@ -146,7 +146,7 @@ export function BlackFridayPanel() {
     <>
       <button
         type="button"
-        onClick={() => { setOpen(true); setSendToCrm(true); setError(""); setNotice("") }}
+        onClick={() => { setOpen(true); setSendToCrm(false); setError(""); setNotice("") }}
         className="group relative flex h-[280px] w-full flex-col justify-between overflow-hidden rounded-2xl border border-amber-400/25 bg-card p-6 text-left shadow-lg transition-all duration-300 hover:-translate-y-1 hover:scale-[1.02] hover:border-amber-300/50 hover:shadow-2xl"
       >
         <div className="absolute inset-0 bg-gradient-to-br from-amber-500/20 via-orange-500/10 to-transparent opacity-80 transition-opacity group-hover:opacity-100" />
