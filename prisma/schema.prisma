@@ -184,6 +184,30 @@ model BlackFridayLead {
   @@map("black_friday_leads")
 }
 
+model DistributionAudit {
+  id              Int      @id @default(autoincrement())
+  action          String
+  requestedById   String   @map("requested_by_id")
+  requestedByName String   @map("requested_by_name")
+  requestedByEmail String? @map("requested_by_email")
+  requestedByRole String   @map("requested_by_role")
+  consultantId    String   @map("consultant_id")
+  consultantCrmId String?  @map("consultant_crm_id")
+  consultantName  String   @map("consultant_name")
+  niche           String
+  quantity        Int
+  state           String?
+  city            String?
+  crmRequested    Boolean  @default(false) @map("crm_requested")
+  listId          Int?     @map("list_id")
+  campaignId      Int?     @map("campaign_id")
+  campaignName    String?  @map("campaign_name")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("distribution_audit")
+  @@index([requestedById, id], map: "idx_distribution_audit_requester_id")
+}
+
 model AppSetting {
   key       String   @id
   value     String

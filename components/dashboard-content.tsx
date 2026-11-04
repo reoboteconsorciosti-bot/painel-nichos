@@ -58,12 +58,37 @@ const buildWhatsAppLink = (phone: string | null | undefined): string | null => {
   return `https://wa.me/${normalizedPhone}`
 }
 
+let memoryAllowedNichesCache: string[] | null = null
+
+function getInitialAllowedNiches(isOwner: boolean): string[] | null {
+  if (isOwner) return NICHES.map((n) => n.id)
+  if (memoryAllowedNichesCache) return memoryAllowedNichesCache
+  if (typeof window !== "undefined") {
+    try {
+      const stored = sessionStorage.getItem("allowed_niches_cache")
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) {
+          memoryAllowedNichesCache = parsed
+          return parsed
+        }
+      }
+    } catch {}
+  }
+  return null
+}
+
 export interface DashboardContentProps {
   consultants: Consultant[]
   canManageBlackFriday?: boolean
+  isOwner?: boolean
 }
 
-export function DashboardContent({ consultants, canManageBlackFriday = false }: DashboardContentProps) {
+export function DashboardContent({
+  consultants,
+  canManageBlackFriday = false,
+  isOwner = false,
+}: DashboardContentProps) {
   const [activeNicheId, setActiveNicheId] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [showSuccess, setShowSuccess] = useState(false)
@@ -75,7 +100,12 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
   const [lastCreated, setLastCreated] = useState<ScheduleEntry | null>(null)
   const [generatedLeadsByEntryId, setGeneratedLeadsByEntryId] = useState<Record<string, GeneratedLead[]>>({})
   const [globalCounts, setGlobalCounts] = useState<Record<string, number> | null>(null)
-  const [allowedNiches, setAllowedNiches] = useState<string[] | null>(null)
+
+  // Inicializa imediatamente do cache (em memória ou sessionStorage)
+  // Dessa forma, ao trocar de abas ou recarregar, não há 1 milissegundo de "reflexo" de nichos bloqueados
+  const [allowedNiches, setAllowedNiches] = useState<string[] | null>(() => getInitialAllowedNiches(isOwner))
+
+  const isNichesLoading = !isOwner && allowedNiches === null
 
   useEffect(() => {
     fetch("/api/leads-availability/all")
@@ -87,15 +117,21 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
       })
       .catch(() => {})
 
-    fetch("/api/admin/niche-visibility")
-      .then(res => res.json())
-      .then(data => {
-        if (data && data.ok && Array.isArray(data.allowedNiches)) {
-          setAllowedNiches(data.allowedNiches)
-        }
-      })
-      .catch(() => {})
-  }, [])
+    if (!isOwner) {
+      fetch("/api/admin/niche-visibility")
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.ok && Array.isArray(data.allowedNiches)) {
+            memoryAllowedNichesCache = data.allowedNiches
+            setAllowedNiches(data.allowedNiches)
+            try {
+              sessionStorage.setItem("allowed_niches_cache", JSON.stringify(data.allowedNiches))
+            } catch {}
+          }
+        })
+        .catch(() => {})
+    }
+  }, [isOwner])
 
   const mapNichoForApi = (nichoId: string, uf: string): string => {
     if (nichoId === "empresarios") {
@@ -105,9 +141,11 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
   }
 
   const availableNiches = useMemo(() => {
-    if (!allowedNiches) return NICHES
+    if (isOwner) return NICHES
+    // Para supervisores e outros perfis: NUNCA exibe todos os nichos enquanto carrega!
+    if (!allowedNiches) return []
     return NICHES.filter((n) => allowedNiches.includes(n.id))
-  }, [allowedNiches])
+  }, [allowedNiches, isOwner])
 
   const filteredNiches = availableNiches.filter((niche) =>
     niche.label.toLowerCase().includes(search.toLowerCase()) ||
@@ -538,7 +576,10 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5">
           <LayoutGrid className="size-4 text-primary" />
           <span className="text-sm text-muted-foreground">
-            <span className="font-semibold text-foreground">{availableNiches.length}</span> nichos disponiveis
+            <span className="font-semibold text-foreground">
+              {isNichesLoading ? "—" : availableNiches.length}
+            </span>{" "}
+            nichos disponíveis
           </span>
         </div>
       </div>
@@ -582,22 +623,34 @@ export function DashboardContent({ consultants, canManageBlackFriday = false }: 
         {/* Grid de nichos */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {canManageBlackFriday && <BlackFridayPanel />}
-          {filteredNiches.map((niche) => (
-            <NicheCard
-              key={niche.id}
-              niche={niche}
-              selected={false}
-              isEmpty={globalCounts ? (globalCounts[niche.id] || 0) === 0 : false}
-              onSelect={handleNicheSelect}
-            />
-          ))}
+          {isNichesLoading ? (
+            // Skeleton suave apenas se for o primeiríssimo carregamento antes do cache
+            [...Array(6)].map((_, i) => (
+              <div
+                key={i}
+                className="h-28 rounded-xl border border-border bg-card/40 animate-pulse"
+              />
+            ))
+          ) : (
+            filteredNiches.map((niche) => (
+              <NicheCard
+                key={niche.id}
+                niche={niche}
+                selected={false}
+                isEmpty={globalCounts ? (globalCounts[niche.id] || 0) === 0 : false}
+                onSelect={handleNicheSelect}
+              />
+            ))
+          )}
         </div>
 
-        {filteredNiches.length === 0 && (
+        {!isNichesLoading && filteredNiches.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <Search className="size-8 text-muted-foreground mb-3" />
             <p className="text-sm text-muted-foreground">
-              Nenhum nicho encontrado para &quot;{search}&quot;
+              {search
+                ? `Nenhum nicho encontrado para "${search}"`
+                : "Nenhum nicho disponível no momento."}
             </p>
           </div>
         )}

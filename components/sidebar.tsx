@@ -1,9 +1,9 @@
 "use client"
 
-import { LayoutDashboard, Shield, Users } from "lucide-react"
+import { ClipboardList, LayoutDashboard, Shield, Users } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type DashboardTab = "dashboard" | "admin" | "team" | "import"
+export type DashboardTab = "dashboard" | "admin" | "team" | "import" | "audit"
 
 interface SidebarProps {
   activeTab: DashboardTab
@@ -34,6 +34,21 @@ export function Sidebar({ activeTab, onTabChange, isAdmin = false, isOwner = fal
           aria-label="Dashboard"
         >
           <LayoutDashboard className="size-5" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onTabChange("audit")}
+          className={cn(
+            "flex h-12 w-full items-center justify-center rounded-xl transition-all",
+            activeTab === "audit"
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
+          )}
+          title="Auditoria de listas"
+          aria-label="Auditoria de listas"
+        >
+          <ClipboardList className="size-5" />
         </button>
 
         {/* Supervisor vê Minha Equipe (Users). Admin NÃO precisa deste ícone duplicado, pois tem o Painel Administrativo (Shield) */}

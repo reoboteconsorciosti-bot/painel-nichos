@@ -101,11 +101,11 @@ export async function POST(req: Request) {
     stage = "allocate_leads"
     const created = await prisma.$transaction(async (tx) => {
       // Serialize campaign allocations with regular list creation so a lead can only be claimed once.
-      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(${CLAIM_LOCK_KEY}::integer, 1::integer)`)
+      await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(${CLAIM_LOCK_KEY}::integer, 1::integer) IS NULL AS locked`)
 
       const consultant = await tx.consultant.findFirst({
         where: { id: { equals: consultantId, in: allowedConsultants.map((entry) => entry.id) }, ...(user.role === "admin" ? {} : { supervisorId: user.id }) },
-        select: { id: true, name: true, supervisorId: true },
+        select: { id: true, name: true, supervisorId: true, crmMemberId: true },
       })
       if (!consultant) throw new Error("consultant_outside_team")
 
@@ -150,6 +150,23 @@ export async function POST(req: Request) {
         }).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
         if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
       }
+      await tx.distributionAudit.create({
+        data: {
+          action: "BLACK_FRIDAY",
+          requestedById: user.id,
+          requestedByName: user.name,
+          requestedByEmail: user.email || null,
+          requestedByRole: user.role,
+          consultantId: consultant.id,
+          consultantCrmId: consultant.crmMemberId,
+          consultantName: consultant.name,
+          niche: campaign.nicho,
+          quantity: leads.length,
+          crmRequested: sendCRM,
+          campaignId: campaign.id,
+          campaignName: campaign.name,
+        },
+      })
       return { consultant, leads, assignedAt }
     })
 

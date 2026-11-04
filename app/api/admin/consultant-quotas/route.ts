@@ -104,7 +104,7 @@ export async function PATCH(req: Request) {
     if (consultantIndex < 0) return NextResponse.json({ ok: false, error: "consultant_not_found" }, { status: 404 })
 
     const result = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1)`)
+      await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1) IS NULL AS locked`)
       if (hasLimit) {
         await tx.consultantQuota.upsert({
           where: { crmUserId },

@@ -9,9 +9,11 @@ import { CONSULTORES, type SupervisorConfig, type Consultant } from "@/lib/data"
 import { User as UserIcon } from "lucide-react"
 import { ImportPanel } from "@/components/import-panel"
 import { OwnerManagementPanel } from "@/components/owner-management-panel"
+import { DistributionAuditPanel } from "@/components/distribution-audit-panel"
+import { type DashboardTab } from "@/components/sidebar"
 
 export default function Page() {
-  const [activeTab, setActiveTab] = useState<"dashboard" | "admin" | "team" | "import">("dashboard")
+  const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard")
   const [consultants, setConsultants] = useState<Consultant[]>(CONSULTORES)
 
   // Reset de listas
@@ -22,17 +24,27 @@ export default function Page() {
 
   useEffect(() => {
     fetch("/api/auth/me")
-      .then(r => r.json())
-      .then(d => {
+      .then((r) => r.json())
+      .then(async (d) => {
         if (d.ok && d.user) {
           setCurrentUser(d.user)
+          // Se não for dono, pré-carrega as permissões de visibilidade antes de liberar o carregamento
+          // Isso elimina qualquer possibilidade de reflexo/flash de nichos bloqueados na tela
+          if (!d.user.isOwner) {
+            try {
+              const res = await fetch("/api/admin/niche-visibility")
+              const vis = await res.json()
+              if (vis?.ok && Array.isArray(vis.allowedNiches)) {
+                sessionStorage.setItem("allowed_niches_cache", JSON.stringify(vis.allowedNiches))
+              }
+            } catch {}
+          }
         }
       })
       .catch(() => {})
       .finally(() => {
         setAuthLoading(false)
       })
-
   }, [])
 
   useEffect(() => {
@@ -67,7 +79,7 @@ export default function Page() {
     load()
   }, [currentUser])
 
-  const handleTabChange = (tab: "dashboard" | "admin" | "team" | "import") => {
+  const handleTabChange = (tab: DashboardTab) => {
     setActiveTab(tab)
   }
 
@@ -94,6 +106,9 @@ export default function Page() {
   }
 
   const handleLogout = () => {
+    try {
+      sessionStorage.removeItem("allowed_niches_cache")
+    } catch {}
     fetch("/api/auth/logout", { method: "POST" }).finally(() => setCurrentUser(null))
   }
 
@@ -112,12 +127,16 @@ export default function Page() {
           onLogout={handleLogout}
         />
         <main className="flex-1">
-          {activeTab === "dashboard" ? (
+          {/* Mantém DashboardContent montado para eliminar qualquer reflexo ou atraso ao alternar abas */}
+          <div className={activeTab === "dashboard" ? "block" : "hidden"}>
             <DashboardContent
               consultants={myConsultants}
               canManageBlackFriday={currentUser.role === "supervisor" || currentUser.role === "admin"}
+              isOwner={currentUser.isOwner === true}
             />
-          ) : activeTab === "team" ? (
+          </div>
+
+          {activeTab === "team" ? (
             currentUser.role === "admin" ? <OwnerManagementPanel /> : (
             <div className="mx-auto max-w-4xl p-6">
               <div className="mb-8">
@@ -166,6 +185,8 @@ export default function Page() {
                 </div>
               </div>
             )
+          ) : activeTab === "audit" ? (
+            <DistributionAuditPanel />
           ) : null}
         </main>
       </div>

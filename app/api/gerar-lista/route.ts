@@ -248,6 +248,24 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "campaign_requires_supervisor_release" }, { status: 403 })
   }
 
+  // Bloqueio de nichos desativados para supervisores e gerentes (não-donos)
+  if (!user.isOwner) {
+    try {
+      const setting = await prisma.appSetting.findUnique({
+        where: { key: "niche_visibility_rules" },
+      })
+      if (setting?.value) {
+        const rules = JSON.parse(setting.value) as Record<string, { supervisors?: boolean }>
+        if (rules && typeof rules === "object") {
+          const rule = rules[nicho]
+          if (rule && rule.supervisors === false) {
+            return NextResponse.json({ ok: false, error: "niche_forbidden_for_role" }, { status: 403 })
+          }
+        }
+      }
+    } catch {}
+  }
+
   if (!consultantCrmId || !quantidade || !estado || !nicho || !consultantName) {
     return NextResponse.json(
       { ok: false, error: "invalid_payload" },
@@ -268,7 +286,7 @@ export async function POST(req: Request) {
   try {
     const result = await prisma.$transaction(async (tx: PrismaType.TransactionClient) => {
       // Serialize regular extraction with campaign allocations to avoid double claims.
-      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1)`)
+      await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1) IS NULL AS locked`)
       // 1. Validar se o limite não estourou (proteção contra concorrência via transaction)
 
       // Opção B (sem coluna nicho em leads): não filtra no banco.
@@ -342,6 +360,24 @@ export async function POST(req: Request) {
         })
         if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
       }
+      await tx.distributionAudit.create({
+        data: {
+          action: "LIST",
+          requestedById: user.id,
+          requestedByName: user.name,
+          requestedByEmail: user.email || null,
+          requestedByRole: user.role,
+          consultantId: currentConsultants[selectedConsultantIndex]!.id,
+          consultantCrmId,
+          consultantName,
+          niche: nicho,
+          quantity: leads.length,
+          state: estado,
+          city: cidade || null,
+          crmRequested: enviarParaCrm,
+          listId: lista.id,
+        },
+      })
       return { lista, leads }
     })
 
