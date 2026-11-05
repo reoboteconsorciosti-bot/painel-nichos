@@ -1,7 +1,50 @@
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { normalizeCrmPayloadPhones, retryDelay } from "@/lib/crm-delivery-payload"
-import { ALREADY_DISTRIBUTED_CODE, crmErrorCode, isLegacyCampaignDelivery, NOT_TRANSFERABLE_CODES, REDISTRIBUTION_METHOD } from "@/lib/crm-redistribution"
+import { ALREADY_DISTRIBUTED_CODE, CAMPAIGN_CLAIM_LOCK_KEY, campaignDelivery, crmErrorCode, findAvailableCampaignLeads, isLegacyCampaignDelivery, NOT_TRANSFERABLE_CODES, OTHER_TEAM_CODE, otherTeamRefusalKey, REDISTRIBUTION_METHOD } from "@/lib/crm-redistribution"
+
+// Disjuntor da reposição: recusas em massa indicam problema no destino ou na busca, não leads ruins.
+const REPLACEMENT_WINDOW = 30
+const MAX_REFUSALS_IN_WINDOW = 25
+// O CRM não repete uma redistribuição com o mesmo requestId, então repetir uma resposta incerta é seguro.
+const RETRY_WINDOW_MS = 10 * 60_000
+const RETRY_DELAY_MS = 60_000
+const canRetry = (job: { method: string; createdAt: Date }) => job.method === REDISTRIBUTION_METHOD && Date.now() - new Date(job.createdAt).getTime() < RETRY_WINDOW_MS
+const retryLater = (job: { id: number }) => prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "pending", nextAttemptAt: new Date(Date.now() + RETRY_DELAY_MS), error: null } })
+
+// O consultor recebe a quantidade pedida: um lead recusado sem alterar nada dá lugar ao próximo disponível.
+async function queueReplacementLead(job: { leadId: number | null; listaId: number | null; idempotencyKey: string; payload: Prisma.JsonValue }) {
+  const leadId = job.leadId
+  if (job.listaId !== null || leadId === null || !job.idempotencyKey.startsWith("black-friday:")) return
+  const { actorId, ownerId, pipelineId, stageId } = job.payload as { actorId: string; ownerId: string; pipelineId: string; stageId: string }
+  await prisma.$transaction(async tx => {
+    // Mantém a reserva até aqui, para o próprio lead recusado não ser escolhido como reposição.
+    await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(${CAMPAIGN_CLAIM_LOCK_KEY}::integer, 1::integer) IS NULL AS locked`)
+    const recent = await tx.crmDelivery.findMany({ where: { method: REDISTRIBUTION_METHOD, status: { in: ["sent", "skipped"] }, idempotencyKey: { not: { contains: ":refused:" } } }, orderBy: { updatedAt: "desc" }, take: REPLACEMENT_WINDOW, select: { status: true } })
+    if (recent.filter(delivery => delivery.status === "skipped").length >= MAX_REFUSALS_IN_WINDOW) {
+      console.error("[CRM] Reposição de leads pausada: muitas recusas seguidas do CRM.")
+      return
+    }
+    const claim = await tx.blackFridayLead.findUnique({ where: { leadId }, include: { campaign: true } })
+    if (!claim) return
+    const [available] = await findAvailableCampaignLeads(tx, claim.campaign.nicho, 1)
+    const lead = available && await tx.lead.findUnique({ where: { id: available.id } })
+    if (!lead) return
+    await tx.blackFridayLead.create({ data: { campaignId: claim.campaignId, leadId: lead.id, supervisorId: claim.supervisorId, consultantId: claim.consultantId, consultantName: claim.consultantName, crmStatus: "pending" } })
+    await tx.crmDelivery.create({ data: campaignDelivery(lead, claim.campaign, { actorId, ownerId, pipelineId, stageId }) })
+  }, { maxWait: 10_000, timeout: 30_000 })
+}
+
+// O negócio aberto tem responsável ativo em outra equipe: continua disponível para quem cuida dela.
+async function releaseToOtherTeam(job: { id: number; leadId: number | null; idempotencyKey: string; payload: Prisma.JsonValue }) {
+  const leadId = job.leadId
+  if (leadId === null) return
+  const { actorId } = job.payload as { actorId: string }
+  await prisma.$transaction(async tx => {
+    await tx.crmDelivery.update({ where: { id: job.id }, data: { idempotencyKey: otherTeamRefusalKey(job.idempotencyKey, actorId) } })
+    await tx.blackFridayLead.deleteMany({ where: { leadId } })
+  })
+}
 
 // One request per 2.2 seconds globally across replicas. Jobs survive deploys.
 export async function processNextCrmDelivery() {
@@ -12,6 +55,7 @@ export async function processNextCrmDelivery() {
     const [lock] = await tx.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`SELECT pg_try_advisory_xact_lock(1330008644, 3) AS locked`)
     if (!lock?.locked) return null
     // A previous process may have died after the CRM accepted a request. Never replay it blindly.
+    await tx.crmDelivery.updateMany({ where: { status: "sending", method: REDISTRIBUTION_METHOD, attemptedAt: { lt: new Date(Date.now() - 120_000) } }, data: { status: "pending", nextAttemptAt: new Date() } })
     await tx.crmDelivery.updateMany({ where: { status: "sending", attemptedAt: { lt: new Date(Date.now() - 120_000) } }, data: { status: "needs_review", error: "Envio interrompido. Confira no CRM antes de reenviar para evitar duplicação." } })
     const last = await tx.crmDelivery.findFirst({ where: { attemptedAt: { not: null } }, orderBy: { attemptedAt: "desc" } })
     if (last?.attemptedAt && last.attemptedAt.getTime() > Date.now() - 2200) return null
@@ -89,16 +133,25 @@ export async function processNextCrmDelivery() {
       // A trava do CRM funcionou: nada foi alterado e não há o que revisar nem reenviar.
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "skipped", error: typeof data?.error === "string" ? data.error : "Este contato já foi redistribuído nesta campanha." } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "already_distributed" } })
+      await queueReplacementLead(job).catch(() => console.error("[CRM] Falha ao repor o lead recusado."))
     } else if (redistribute && NOT_TRANSFERABLE_CODES.has(crmErrorCode(data) ?? "")) {
-      // O lead continua reservado: voltar à distribuição só repetiria a mesma recusa no próximo lote.
+      // O lead continua reservado: voltar à distribuição só repetiria a mesma recusa. Outro entra no lugar.
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "skipped", error: typeof data?.error === "string" ? data.error : "O CRM não aceitou este lead." } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "not_transferred" } })
+      await queueReplacementLead(job).catch(() => console.error("[CRM] Falha ao repor o lead recusado."))
+      if (crmErrorCode(data) === OTHER_TEAM_CODE) await releaseToOtherTeam(job).catch(() => console.error("[CRM] Falha ao devolver o lead de outra equipe."))
+    } else if ((response.status >= 500 || (response.status === 409 && !crmErrorCode(data))) && canRetry(job)) {
+      await retryLater(job)
     } else {
       const target = job.method === "CONTACTS_BULK" ? "os contatos" : "o negócio"
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: redistribute || response.status >= 500 || response.ok ? "needs_review" : "failed", error: typeof data?.error === "string" ? data.error : `O CRM retornou HTTP ${response.status}. Confira ${target} no CRM antes de reenviar.` } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "error" } })
     }
   } catch {
+    if (canRetry(job)) {
+      await retryLater(job)
+      return
+    }
     const target = job.method === "CONTACTS_BULK" ? "os contatos" : "o negócio"
     await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "needs_review", error: `Não foi possível confirmar a resposta do CRM. Confira ${target} antes de reenviar para evitar duplicação.` } })
     if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "error" } })

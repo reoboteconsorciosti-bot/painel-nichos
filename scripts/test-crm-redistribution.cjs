@@ -16,7 +16,7 @@ function loader(mocks = {}) {
   return load
 }
 const load = loader()
-const { buildCrmRedistribution, defaultCrmDestination, isLegacyCampaignDelivery, pickAvailableCampaignLeads } = load('lib/crm-redistribution.ts')
+const { buildCrmRedistribution, defaultCrmDestination, findAvailableCampaignLeads, isLegacyCampaignDelivery, pickAvailableCampaignLeads } = load('lib/crm-redistribution.ts')
 const { campaignPhoneKey, normalizeCampaignPhone, normalizeImportPhone } = load('lib/phone-normalization.ts')
 test('formats of the same phone share one key and different people do not', () => {
   for (const phone of ['65999990000', '5565999990000', '065999990000', '005565999990000','6599990000', '556599990000', '(65) 99999-0000', '02165999990000']) assert.equal(campaignPhoneKey(phone), '6599990000', phone)
@@ -42,6 +42,7 @@ test('the CRM destination is only preselected when there is no doubt', () => {
   assert.deepEqual(defaultCrmDestination([outro]), { pipelineId: 'p2', stageId: 's3' })
   assert.deepEqual(defaultCrmDestination([outro, { id: 'p3', name: 'Outro', stages: [] }]), { pipelineId: '', stageId: '' })
   assert.deepEqual(defaultCrmDestination([{ ...vendas, stages: [{ id: 's1', name: 'Black 1' }, { id: 's2', name: 'Black 2' }] }]), { pipelineId: 'p1', stageId: '' })
+  assert.deepEqual(defaultCrmDestination([{ ...vendas, stages: [{ id: 's1', name: 'Black Antiga' }, { id: 's2', name: 'BLACK NOVEMBER' }] }]), { pipelineId: 'p1', stageId: 's2' })
 })
 const { mapImportRow } = load('lib/import-mapping.ts')
 test('campaign numbers preserve their source identity instead of inventing a WhatsApp', () => {
@@ -64,15 +65,19 @@ test('legacy campaign creates are recognized regardless of source spelling', () 
   assert.equal(isLegacyCampaignDelivery({ method: 'POST', idempotencyKey: 'list:1:lead:2', payload: {} }), false)
 })
 
-async function exerciseWorker(job, response) {
+async function exerciseWorker(job, response, replacement = {}) {
   const oldFetch = global.fetch
   const oldBase = process.env.CRM_API_URL; const oldKey = process.env.CRM_API_KEY
   const calls = []; const updates = []
   let reads = 0
   const tx = { $queryRaw: async () => [{ locked: true }], crmDelivery: {
     updateMany: async () => ({ count: 0 }), findFirst: async () => ++reads === 2 ? job : null,
-    findMany: async () => [], update: async () => job,
-  } }
+    findMany: async () => replacement.recent ?? [], update: async args => { replacement.renamed = args.data.idempotencyKey ?? replacement.renamed; return job },
+    create: async args => { replacement.created = args.data; return args.data },
+  },
+    blackFridayLead: { findUnique: async () => replacement.claim ?? null, findMany: async () => [], create: async args => { replacement.claimed = args.data; return args.data }, deleteMany: async args => { replacement.released = args.where.leadId; return { count: 1 } } },
+    lead: { findMany: async () => replacement.candidates ?? [], findUnique: async () => replacement.lead ?? null },
+  }
   const fakePrisma = { $transaction: async cb => cb(tx), crmDelivery: { update: async args => { updates.push(args.data); return job } }, blackFridayLead: { updateMany: async () => ({ count: 1 }) } }
   process.env.CRM_API_URL = 'https://crm.invalid'; process.env.CRM_API_KEY = 'fake-test-key'
   global.fetch = async (url, opts) => { calls.push({ url, opts }); return response }
@@ -132,6 +137,44 @@ test('undoing an import keeps distributed leads reserved and only cancels what h
 test('a lead the CRM refuses for good is settled with its reason, without review or resend', async () => {
   const result = await exerciseWorker(job, { status: 404, ok: false, json: async () => ({ success: false, error: 'Não encontrado', details: [{ code: 'DEAL_NOT_FOUND' }] }) })
   assert.equal(result.calls.length, 1); assert.equal(result.updates[0].status, 'skipped'); assert.equal(result.updates[0].error, 'Não encontrado')
+})
+const refused = code => ({ status: 404, ok: false, json: async () => ({ success: false, error: 'Recusado', details: [{ code }] }) })
+const nextLead = { id: 9, phone: '11988887777', name: 'Próximo', email: null, company: null, fantasy: null, city: null, state: null, dealDescription: null, crmDealId: null }
+const replacementJob = { ...job, payload: { ...job.payload, actorId: 'sup', ownerId: 'crm-ana', pipelineId: 'p', stageId: 's' } }
+const replacementSetup = extra => ({ claim: { campaignId: 1, supervisorId: 'sup', consultantId: 'ana', consultantName: 'Ana', campaign: { id: 1, nicho: 'black-friday-2026' } }, candidates: [nextLead], lead: nextLead, ...extra })
+test('a refused lead gives its place to the next one, for the same consultant and stage', async () => {
+  const setup = replacementSetup(); await exerciseWorker(replacementJob, refused('DEAL_NOT_FOUND'), setup)
+  assert.equal(setup.claimed.leadId, 9); assert.equal(setup.claimed.consultantId, 'ana'); assert.equal(setup.claimed.crmStatus, 'pending')
+  assert.equal(setup.created.idempotencyKey, 'black-friday:1:lead:9'); assert.equal(setup.created.payload.stageId, 's'); assert.equal(setup.created.payload.ownerId, 'crm-ana'); assert.equal(setup.created.payload.reopenLost, true)
+})
+test('mass refusals stop the replacement instead of burning the base', async () => {
+  const setup = replacementSetup({ recent: Array(25).fill({ status: 'skipped' }) }); await exerciseWorker(replacementJob, refused('DEAL_NOT_FOUND'), setup)
+  assert.equal(setup.created, undefined); assert.equal(setup.claimed, undefined)
+})
+test('an open deal from another team goes back to the pool, but not to the same supervisor', async () => {
+  const setup = replacementSetup(); const result = await exerciseWorker(replacementJob, refused('CURRENT_OWNER_OUTSIDE_TEAM'), setup)
+  assert.equal(setup.released, 2); assert.equal(setup.renamed, 'black-friday:1:lead:2:refused:sup')
+  assert.equal(setup.claimed.leadId, 9); assert.equal(result.updates[0].status, 'skipped')
+  const db = { crmDelivery: { findMany: async args => args.where.idempotencyKey.endsWith === ':refused:sup' ? [{ leadId: 2 }] : [] }, blackFridayLead: { findMany: async () => [] },
+    lead: { findMany: async () => [{ id: 2, phone: '65999990000' }, { id: 3, phone: '11988887777' }] } }
+  assert.deepEqual((await findAvailableCampaignLeads(db, 'n', 5, 'sup')).map(lead => lead.id), [3])
+  assert.deepEqual((await findAvailableCampaignLeads(db, 'n', 5, 'other')).map(lead => lead.id), [2, 3])
+})
+test('uncertain CRM answers are retried with the same request while recent, then go to review', async () => {
+  const recent = { ...replacementJob, createdAt: new Date() }; const old = { ...replacementJob, createdAt: new Date(Date.now() - 3_600_000) }
+  const down = { status: 500, ok: false, json: async () => null }; const conflict = { status: 409, ok: false, json: async () => ({ success: false, error: 'Mudou' }) }
+  for (const response of [down, conflict]) {
+    const retried = await exerciseWorker(recent, response); assert.equal(retried.updates[0].status, 'pending')
+    assert.equal((await exerciseWorker(old, response)).updates[0].status, 'needs_review')
+  }
+})
+test('errors unrelated to the lead never consume another lead', async () => {
+  const setup = replacementSetup(); await exerciseWorker(replacementJob, refused('ACTOR_NOT_AUTHORIZED'), setup)
+  assert.equal(setup.created, undefined)
+})
+test('a failed replacement does not turn the settled refusal into an error', async () => {
+  const result = await exerciseWorker(replacementJob, refused('DEAL_NOT_FOUND'), { claim: {} })
+  assert.equal(result.updates.length, 1); assert.equal(result.updates[0].status, 'skipped')
 })
 test('a refusal unrelated to the lead still goes to review instead of settling the whole base', async () => {
   const result = await exerciseWorker(job, { status: 403, ok: false, json: async () => ({ success: false, error: 'Sem permissão', details: [{ code: 'ACTOR_NOT_AUTHORIZED' }] }) })

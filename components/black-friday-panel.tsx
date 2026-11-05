@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { ArrowDownToLine, LoaderCircle, Sparkles, Zap } from "lucide-react"
 import * as XLSX from "xlsx"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { defaultCrmDestination } from "@/lib/crm-redistribution"
 
 type CampaignData = {
   campaign: { id: number; year: number; name: string; endsAt: string } | null
@@ -21,33 +20,39 @@ type CampaignData = {
   }>
 }
 
+const CRM_STATUS_LABELS: Record<string, string> = {
+  pending: "Enviando",
+  sent: "Transferido",
+  created: "Negócio criado",
+  partial: "Transferido com aviso",
+  not_transferred: "Não transferido",
+  already_distributed: "Já distribuído",
+  error: "Com erro",
+}
+const crmStatusLabel = (status: string) => CRM_STATUS_LABELS[status] ?? "Não enviado"
+
 export function BlackFridayPanel() {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState<CampaignData | null>(null)
   const [loading, setLoading] = useState(true)
   const [selectedConsultant, setSelectedConsultant] = useState("")
   const [quantity, setQuantity] = useState("")
-  const [pipelines, setPipelines] = useState<Array<{ id: string; name: string; stages: Array<{ id: string; name: string }> }>>([])
-  const [pipelineId, setPipelineId] = useState("")
-  const [stageId, setStageId] = useState("")
-  const [showCrmOptions, setShowCrmOptions] = useState(false)
-  const [crmSetupLoading, setCrmSetupLoading] = useState(false)
-  const [crmConfigured, setCrmConfigured] = useState(false)
-  const [crmSetupError, setCrmSetupError] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError("")
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true)
+      setError("")
+    }
     try {
       const response = await fetch("/api/black-friday", { credentials: "include", cache: "no-store" })
       const result = await response.json()
       if (!response.ok || !result.ok) throw new Error(result.error ?? "Não foi possível carregar a campanha.")
       setData(result as CampaignData)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar a campanha.")
+      if (!silent) setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar a campanha.")
     } finally {
       setLoading(false)
     }
@@ -55,30 +60,13 @@ export function BlackFridayPanel() {
 
   useEffect(() => { void refresh() }, [refresh])
 
+  // Enquanto houver envio em andamento, o histórico se atualiza sozinho.
+  const sending = open && !!data?.allocations.some((allocation) => allocation.crmStatus === "pending")
   useEffect(() => {
-    if (!open) return
-    const controller = new AbortController()
-    setCrmSetupLoading(true)
-    setCrmConfigured(false)
-    setCrmSetupError("")
-    fetch("/api/crm/redistribution-stages", { credentials: "include", cache: "no-store", signal: controller.signal })
-      .then(async response => {
-        const result = await response.json()
-        if (!response.ok || !result.ok) throw new Error("crm_unavailable")
-        if (controller.signal.aborted) return
-        const loaded = Array.isArray(result.pipelines) ? result.pipelines : []
-        const destination = defaultCrmDestination(loaded)
-        setPipelines(loaded)
-        setPipelineId(destination.pipelineId)
-        setStageId(destination.stageId)
-        setShowCrmOptions(!destination.stageId)
-        setCrmConfigured(result.configured === true)
-        if (!result.configured) throw new Error("crm_unavailable")
-      })
-      .catch(() => { if (!controller.signal.aborted) setCrmSetupError("Não foi possível conectar ao CRM. Nada foi enviado. Feche e abra novamente.") })
-      .finally(() => { if (!controller.signal.aborted) setCrmSetupLoading(false) })
-    return () => controller.abort()
-  }, [open])
+    if (!sending) return
+    const timer = setInterval(() => void refresh(true), 10_000)
+    return () => clearInterval(timer)
+  }, [sending, refresh])
 
   const maxQuantity = data?.available ?? null
   const formattedDate = useMemo(() => {
@@ -98,10 +86,6 @@ export function BlackFridayPanel() {
       setError(`Há ${maxQuantity} leads disponíveis para esta campanha.`)
       return
     }
-    if (!crmConfigured || !pipelineId || !stageId) {
-      setError("Escolha o funil e a etapa do CRM.")
-      return
-    }
     setSubmitting(true)
     try {
       const response = await fetch("/api/black-friday", {
@@ -111,11 +95,6 @@ export function BlackFridayPanel() {
         body: JSON.stringify({
           consultantId: selectedConsultant,
           quantity: numericQuantity,
-          sendToCrm: true,
-          pipelineId,
-          stageId,
-          reopenLost: true,
-          createIfMissing: true,
         }),
       })
       const result = await response.json()
@@ -124,6 +103,10 @@ export function BlackFridayPanel() {
           ? "Não há mais leads disponíveis. Atualize a campanha para conferir a quantidade."
           : result.error === "consultant_outside_team"
             ? "Esse consultor não está mais disponível para sua equipe. Atualize a tela e escolha outro."
+            : result.error === "crm_unavailable"
+              ? "Não foi possível falar com o CRM agora. Nada foi enviado. Tente de novo em instantes e, se continuar, avise o administrador."
+            : result.error === "consultant_crm_id_missing"
+              ? "Esse consultor não está vinculado a um usuário do CRM. Nada foi enviado. Avise o administrador."
             : result.error === "campaign_not_active"
               ? "A campanha não está ativa neste momento. Atualize a tela ou fale com o administrador."
               : result.error === "failed_to_assign_leads"
@@ -131,12 +114,9 @@ export function BlackFridayPanel() {
                 : result.error ?? "Não foi possível importar os leads."
         throw new Error(friendlyError)
       }
-      const crm = result.crm as { configured?: boolean; queuedCount?: number; createdCount?: number; ignoredCount?: number; warnings?: string[] } | null
-      setNotice(crm?.configured
-        ? `${result.leads.length} leads enviados para ${result.consultant.name}. O resultado aparece na lista abaixo.`
-        : `${result.leads.length} leads reservados, mas o CRM não está configurado neste ambiente.`)
+      setNotice(`${result.leads.length} leads enviados para ${result.consultant.name}. O resultado aparece no histórico abaixo.`)
       setQuantity("")
-      await refresh()
+      await refresh(true)
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Falha ao importar os leads.")
     } finally {
@@ -154,8 +134,8 @@ export function BlackFridayPanel() {
       UF: lead.state ?? "",
       Empresa: lead.company ?? lead.fantasy ?? "",
       "Liberado em": new Date(assignedAt).toLocaleString("pt-BR"),
-      "Status CRM": crmStatus,
-      "Motivo CRM": crmError ?? "",
+      Resultado: crmStatusLabel(crmStatus),
+      Motivo: crmError ?? "",
     }))
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Black Friday")
@@ -189,14 +169,12 @@ export function BlackFridayPanel() {
       </div>
     )
   }
-  const selectedPipeline = pipelines.find(pipeline => pipeline.id === pipelineId)
-  const selectedStage = selectedPipeline?.stages.find(stage => stage.id === stageId)
 
   return (
     <>
       <button
         type="button"
-        onClick={() => { setOpen(true); setPipelineId(""); setStageId(""); setShowCrmOptions(false); setError(""); setNotice("") }}
+        onClick={() => { setOpen(true); void refresh(true); setError(""); setNotice("") }}
         className="group relative flex h-[280px] w-full flex-col justify-between overflow-hidden rounded-2xl border border-amber-400/25 bg-card p-6 text-left shadow-lg transition-all duration-300 hover:-translate-y-1 hover:scale-[1.02] hover:border-amber-300/50 hover:shadow-2xl"
       >
         <div className="absolute inset-0 bg-gradient-to-br from-amber-500/20 via-orange-500/10 to-transparent opacity-80 transition-opacity group-hover:opacity-100" />
@@ -238,24 +216,9 @@ export function BlackFridayPanel() {
               </label>
             </div>
 
-            {crmSetupLoading && <p className="text-xs text-muted-foreground">Carregando o CRM...</p>}
-            {crmSetupError && <p role="alert" className="text-sm text-destructive">{crmSetupError}</p>}
-            {crmConfigured && <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
-              <p>
-                {selectedStage ? <>Etapa no CRM: <strong className="text-foreground">{selectedStage.name}</strong></> : "Escolha a etapa no CRM"}
-              </p>
-              <button type="button" onClick={() => setShowCrmOptions(current => !current)} className="shrink-0 underline underline-offset-4">{showCrmOptions ? "Fechar" : "Alterar"}</button>
-            </div>}
-            {crmConfigured && showCrmOptions && <div className="rounded-lg border border-border p-3">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block space-y-1 text-sm">Funil<select value={pipelineId} onChange={event => { setPipelineId(event.target.value); setStageId("") }} disabled={submitting} className="h-10 w-full rounded-md border border-border bg-background px-3"><option value="">Escolha o funil</option>{pipelines.map(pipeline => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</select></label>
-                <label className="block space-y-1 text-sm">Etapa<select value={stageId} onChange={event => setStageId(event.target.value)} disabled={submitting || !pipelineId} className="h-10 w-full rounded-md border border-border bg-background px-3"><option value="">Escolha a etapa</option>{selectedPipeline?.stages.map(stage => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>
-              </div>
-            </div>}
-
             {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
             {notice && <p role="status" className="text-sm text-emerald-500">{notice}</p>}
-            <button type="button" onClick={handleAssign} disabled={submitting || data.consultants.length === 0 || !selectedConsultant || !quantity || maxQuantity === 0 || crmSetupLoading || !crmConfigured || !pipelineId || !stageId} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={handleAssign} disabled={submitting || data.consultants.length === 0 || !selectedConsultant || !quantity || maxQuantity === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
               {submitting ? <LoaderCircle className="size-4 animate-spin" /> : <Zap className="size-4" />}
               {submitting ? "Importando…" : "Importar no CRM"}
             </button>
@@ -263,17 +226,16 @@ export function BlackFridayPanel() {
 
           <section className="space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="font-semibold">Leads enviados ({data.allocations.length})</h3>
+              <h3 className="font-semibold">Histórico de envios ({data.allocations.length})</h3>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 <button type="button" onClick={exportAllocations} disabled={data.allocations.length === 0} className="flex items-center gap-1 underline underline-offset-4 disabled:opacity-50"><ArrowDownToLine className="size-3.5" />Exportar</button>
-                <button type="button" onClick={() => void refresh()} className="underline underline-offset-4">Atualizar</button>
               </div>
             </div>
-            {data.allocations.length === 0 ? <p className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">Nenhum lead enviado ainda.</p> : (
+            {data.allocations.length === 0 ? <p className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">Nenhum envio ainda.</p> : (
               <div className="max-h-64 overflow-auto rounded-lg border border-border">
                 <table className="w-full text-left text-xs">
-                  <thead className="sticky top-0 bg-secondary text-muted-foreground"><tr><th className="p-2">Consultor</th><th className="p-2">Lead</th><th className="p-2">Telefone</th><th className="p-2">CRM</th></tr></thead>
-                  <tbody>{data.allocations.map((allocation) => <tr key={allocation.id} className="border-t border-border"><td className="p-2">{allocation.consultant.name}</td><td className="p-2">{allocation.lead.name ?? "—"}</td><td className="p-2">{allocation.lead.phone ?? "—"}</td><td className="p-2">{allocation.crmStatus === "sent" ? "Enviado" : allocation.crmStatus === "created" ? "Negócio criado" :allocation.crmStatus === "partial" ? "Enviado com aviso" : allocation.crmStatus === "not_transferred" ? "Não transferido" : allocation.crmStatus === "error" ? "Com erro" : allocation.crmStatus === "pending" ? "Pendente" : allocation.crmStatus === "already_distributed" ? "Já distribuído" : "—"}{allocation.crmError && <p className="mt-1 max-w-64 text-muted-foreground">{allocation.crmError}</p>}</td></tr>)}</tbody>
+                  <thead className="sticky top-0 bg-secondary text-muted-foreground"><tr><th className="p-2">Consultor</th><th className="p-2">Lead</th><th className="p-2">Telefone</th><th className="p-2">Resultado</th></tr></thead>
+                  <tbody>{data.allocations.map((allocation) => <tr key={allocation.id} className="border-t border-border"><td className="p-2">{allocation.consultant.name}</td><td className="p-2">{allocation.lead.name ?? "—"}</td><td className="p-2">{allocation.lead.phone ?? "—"}</td><td className="p-2">{crmStatusLabel(allocation.crmStatus)}{allocation.crmError && <p className="mt-1 max-w-64 text-muted-foreground">{allocation.crmError}</p>}</td></tr>)}</tbody>
                 </table>
               </div>
             )}

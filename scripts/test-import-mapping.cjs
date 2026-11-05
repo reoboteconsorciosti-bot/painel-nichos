@@ -263,10 +263,15 @@ test("gerar lista grava distribuição e fila na mesma transação, sem envio ex
   assert.equal(queued.length, 1)
 })
 
-test("campanha usa redistribuição do negócio existente, com etapa e solicitante, após autorização explícita", async () => {
+test("campanha usa redistribuição do negócio existente, sempre na etapa da Black, ignorando o que a tela enviar", async () => {
   let queued
+  const oldFetch = global.fetch; const oldBase = process.env.CRM_API_URL; const oldKey = process.env.CRM_API_KEY
+  process.env.CRM_API_URL = "https://crm.invalid"; process.env.CRM_API_KEY = "fake-test-key"
+  let stages = [{ id: "pipeline", name: "Funil de Vendas", stages: [{ id: "other", name: "Novo" }, { id: "stage", name: "BLACK NOVEMBER" }] }]
+  global.fetch = async () => ({ ok: true, json: async () => ({ success: true, data: { pipelines: stages } }) })
+  try {
   const consultant = { id: "local-ana", crmUserId: "crm-ana", name: "Ana", supervisorId: "supervisor-test" }
-  const tx = { $queryRaw: async () => [], consultant: { findFirst: async () => consultant }, lead: { findMany: async () => [lead] }, distributionAudit: { create: async () => ({}) }, blackFridayLead: { createMany: async () => {}, findMany: async () => [] }, crmDelivery: { createMany: async args => { queued = args.data; return { count: args.data.length } } } }
+  const tx = { $queryRaw: async () => [], consultant: { findFirst: async () => consultant }, lead: { findMany: async () => [lead] }, distributionAudit: { create: async () => ({}) }, blackFridayLead: { createMany: async () => {}, findMany: async () => [] }, crmDelivery: { findMany: async () => [], createMany: async args => { queued = args.data; return { count: args.data.length } } } }
   const prisma = { $transaction: fn => fn(tx), blackFridayCampaign: { findFirst: async () => ({ id: 1, name: "Black Friday", nicho: "black-friday-2026" }) }, crmDelivery: { count: async () => 1 } }
   const route = loader({
     "@/lib/prisma": { prisma },
@@ -275,7 +280,7 @@ test("campanha usa redistribuição do negócio existente, com etapa e solicitan
     "@/lib/server-users": { getInitialUsers: () => [] },
     "@/lib/lead-visibility": { canViewGlobalLeadCounts: async () => true },
   })("app/api/black-friday/route.ts")
-  const response = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1, sendToCrm: true, pipelineId: "pipeline", stageId: "stage" }) }))
+  const response = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1, sendToCrm: false, pipelineId: "x", stageId: "other", reopenLost: false }) }))
   assert.equal(response.status, 200)
   assert.equal(queued[0].consultantCrmId, "crm-ana")
   assert.equal(queued[0].method, "REDISTRIBUTE")
@@ -283,5 +288,15 @@ test("campanha usa redistribuição do negócio existente, com etapa e solicitan
   assert.equal(queued[0].payload.stageId, "stage")
   assert.equal(queued[0].payload.phone, lead.phone)
   assert.equal(queued[0].payload.contact, undefined)
+  assert.equal(queued[0].payload.reopenLost, true)
   assert.equal((await response.json()).crm.queuedCount, 1)
+  queued = undefined; stages = []
+  const blocked = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1 }) }))
+  assert.equal(blocked.status, 503); assert.equal(queued, undefined)
+  } finally {
+    global.fetch = oldFetch
+    for (const [key, value] of Object.entries({ CRM_API_URL: oldBase, CRM_API_KEY: oldKey })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  }
 })

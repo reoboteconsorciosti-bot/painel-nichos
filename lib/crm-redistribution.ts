@@ -1,6 +1,11 @@
+import type { Prisma } from "@prisma/client"
 import { campaignPhoneKey } from "@/lib/phone-normalization"
 
 export const REDISTRIBUTION_METHOD = "REDISTRIBUTE"
+export const CAMPAIGN_CLAIM_LOCK_KEY = 1330008644
+export const OTHER_TEAM_CODE = "CURRENT_OWNER_OUTSIDE_TEAM"
+// Lead de outra equipe volta à distribuição, e este sufixo impede que o mesmo supervisor o receba de novo.
+export const otherTeamRefusalKey = (idempotencyKey: string, actorId: string) => `${idempotencyKey}:refused:${actorId}`
 export const ALREADY_DISTRIBUTED_CODE = "CONTACT_ALREADY_DISTRIBUTED"
 // O CRM recusou este lead sem alterar nada e reenviar não mudaria o resultado: não exige revisão.
 export const NOT_TRANSFERABLE_CODES = new Set(["CONTACT_NOT_FOUND", "PHONE_NOT_SEARCHABLE", "PHONE_NOT_CREATABLE", "CONTACT_POSSIBLE_MATCH", "CREATION_LIMIT_REACHED", "DEAL_NOT_FOUND", "CURRENT_OWNER_OUTSIDE_TEAM", "STAGE_REQUIRED_FIELDS"])
@@ -26,14 +31,29 @@ export function pickAvailableCampaignLeads<T extends { phone: string | null }>(c
   return picked
 }
 
+export async function findAvailableCampaignLeads(db: Prisma.TransactionClient, nicho: string, limit?: number, actorId?: string) {
+  const refused = actorId ? await db.crmDelivery.findMany({ where: { idempotencyKey: { endsWith: `:refused:${actorId}` } }, select: { leadId: true } }) : []
+  const refusedIds = new Set(refused.map((delivery) => delivery.leadId))
+  const [candidates, claims] = await Promise.all([
+    db.lead.findMany({
+      where: { nicho, listaLeads: { none: {} }, blackFridayClaim: { is: null } },
+      orderBy: { id: "asc" },
+      select: { id: true, phone: true },
+    }),
+    db.blackFridayLead.findMany({ select: { lead: { select: { phone: true } } } }),
+  ])
+  return pickAvailableCampaignLeads(candidates.filter((lead) => !refusedIds.has(lead.id)), claims.map((claim) => claim.lead.phone), limit)
+}
+
 // Mesmos limites do CRM: um texto longo da planilha não pode fazer o lead inteiro ser recusado.
 const FALLBACK_LIMITS: Record<string, number> = { city: 100, state: 100, description: 10_000 }
 
-// Só pré-seleciona quando não há dúvida; caso contrário, o usuário escolhe na tela.
+// O destino da campanha é decidido aqui, nunca pela tela. Na dúvida, não escolhe e nada é enviado.
 export function defaultCrmDestination(pipelines: Array<{ id: string; name: string; stages: Array<{ id: string; name: string }> }>) {
   const pipeline = pipelines.find(entry => entry.name.trim().toLowerCase() === "funil de vendas") ?? (pipelines.length === 1 ? pipelines[0] : null)
+  const exact = pipeline?.stages.find(stage => stage.name.trim().toLowerCase() === "black november")
   const stages = pipeline?.stages.filter(stage => /black/i.test(stage.name)) ?? []
-  return { pipelineId: pipeline?.id ?? "", stageId: stages.length === 1 ? stages[0].id : "" }
+  return { pipelineId: pipeline?.id ?? "", stageId: exact?.id ?? (stages.length === 1 ? stages[0].id : "") }
 }
 
 export function buildCrmRedistribution(input: {
@@ -68,6 +88,35 @@ export function buildCrmRedistribution(input: {
       ...(input.dealId ? { dealId: input.dealId } : {}),
       ...(fallback ? { createIfMissing: true, fallback } : {}),
     },
+  }
+}
+
+export async function loadCampaignDestination() {
+  const base = process.env.CRM_API_URL?.trim().replace(/\/+$/, "")
+  const key = process.env.CRM_API_KEY?.trim()
+  if (!base || !key) return null
+  try {
+    const response = await fetch(`${base}/api/v1/painel-nichos/stages`, {
+      headers: { Authorization: `Bearer ${key}` }, cache: "no-store", signal: AbortSignal.timeout(12_000),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.success || !Array.isArray(result.data?.pipelines)) return null
+    const destination = defaultCrmDestination(result.data.pipelines)
+    return destination.pipelineId && destination.stageId ? destination : null
+  } catch {
+    return null
+  }
+}
+
+type CampaignLead = { id: number; phone: string | null; name: string | null; email: string | null; company: string | null; fantasy: string | null; city: string | null; state: string | null; dealDescription: string | null; crmDealId: string | null }
+
+// Regras fixas da campanha: reabre perdidos e, em último caso, o CRM pode criar sob as próprias travas.
+export function campaignDelivery(lead: CampaignLead, campaign: { id: number; nicho: string }, target: { actorId: string; ownerId: string; pipelineId: string; stageId: string }) {
+  const requestId = `black-friday:${campaign.id}:lead:${lead.id}`
+  return {
+    leadId: lead.id, consultantCrmId: target.ownerId, idempotencyKey: requestId,
+    ...buildCrmRedistribution({ requestId, campaignKey: campaign.nicho, phone: lead.phone, dealId: lead.crmDealId, ...target, reopenLost: true,
+      createIfMissing: { name: lead.name, email: lead.email, company: lead.company || lead.fantasy, city: lead.city, state: lead.state, description: lead.dealDescription } }),
   }
 }
 
