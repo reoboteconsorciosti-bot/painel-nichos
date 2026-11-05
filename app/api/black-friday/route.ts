@@ -185,7 +185,7 @@ export async function POST(req: Request) {
         },
       })
       return { consultant, leads, assignedAt, queuedCount }
-    })
+    }, { maxWait: 10_000, timeout: 30_000 })
 
     stage = sendCRM ? "count_crm_queue" : "complete_assignment"
     const crmResult = sendCRM ? {
