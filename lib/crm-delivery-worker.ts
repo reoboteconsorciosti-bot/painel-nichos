@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { normalizeCrmPayloadPhones, retryDelay } from "@/lib/crm-delivery-payload"
-import { ALREADY_DISTRIBUTED_CODE, crmErrorCode, isLegacyCampaignDelivery, REDISTRIBUTION_METHOD } from "@/lib/crm-redistribution"
+import { ALREADY_DISTRIBUTED_CODE, crmErrorCode, isLegacyCampaignDelivery, NOT_TRANSFERABLE_CODES, REDISTRIBUTION_METHOD } from "@/lib/crm-redistribution"
 
 // One request per 2.2 seconds globally across replicas. Jobs survive deploys.
 export async function processNextCrmDelivery() {
@@ -89,6 +89,10 @@ export async function processNextCrmDelivery() {
       // A trava do CRM funcionou: nada foi alterado e não há o que revisar nem reenviar.
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "skipped", error: typeof data?.error === "string" ? data.error : "Este contato já foi redistribuído nesta campanha." } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "already_distributed" } })
+    } else if (redistribute && NOT_TRANSFERABLE_CODES.has(crmErrorCode(data) ?? "")) {
+      // O lead continua reservado: voltar à distribuição só repetiria a mesma recusa no próximo lote.
+      await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "skipped", error: typeof data?.error === "string" ? data.error : "O CRM não aceitou este lead." } })
+      if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "not_transferred" } })
     } else {
       const target = job.method === "CONTACTS_BULK" ? "os contatos" : "o negócio"
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: redistribute || response.status >= 500 || response.ok ? "needs_review" : "failed", error: typeof data?.error === "string" ? data.error : `O CRM retornou HTTP ${response.status}. Confira ${target} no CRM antes de reenviar.` } })

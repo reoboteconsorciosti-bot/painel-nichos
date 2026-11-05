@@ -55,12 +55,12 @@ export async function GET(req: Request) {
         include: { consultant: { select: { id: true, name: true } }, lead: true },
       }),
       prisma.crmDelivery.findMany({
-        where: { idempotencyKey: { startsWith: `black-friday:${campaign.id}:lead:` }, status: { in: ["failed", "needs_review", "skipped"] } },
-        select: { leadId: true, error: true },
+        where: { idempotencyKey: { startsWith: `black-friday:${campaign.id}:lead:` }, status: { in: ["failed", "needs_review", "skipped", "sent"] } },
+        select: { leadId: true, error: true, warnings: true },
       }),
     ])
 
-    const crmErrors = new Map(crmProblems.map((problem) => [problem.leadId, problem.error]))
+    const crmErrors = new Map(crmProblems.map((problem) => [problem.leadId, problem.error ?? (Array.isArray(problem.warnings) ? problem.warnings.join(" ") : null)]))
     const hiddenUserNames = new Set(getInitialUsers().map((entry) => entry.name.trim().toLowerCase()).filter(Boolean))
     return NextResponse.json({
       ok: true,
@@ -71,7 +71,7 @@ export async function GET(req: Request) {
       allocations: allocations.map(({ lead, consultant, ...assignment }) => ({
         ...assignment,
         consultant: consultant ?? { id: assignment.consultantId ?? "removed", name: assignment.consultantName },
-        crmError: crmErrors.get(assignment.leadId) ?? null,
+        crmError: crmErrors.get(assignment.leadId) || null,
         lead,
       })),
     })

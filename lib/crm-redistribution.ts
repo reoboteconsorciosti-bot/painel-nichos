@@ -2,6 +2,8 @@ import { campaignPhoneKey } from "@/lib/phone-normalization"
 
 export const REDISTRIBUTION_METHOD = "REDISTRIBUTE"
 export const ALREADY_DISTRIBUTED_CODE = "CONTACT_ALREADY_DISTRIBUTED"
+// O CRM recusou este lead sem alterar nada e reenviar não mudaria o resultado: não exige revisão.
+export const NOT_TRANSFERABLE_CODES = new Set(["CONTACT_NOT_FOUND", "PHONE_NOT_SEARCHABLE", "PHONE_NOT_CREATABLE", "CONTACT_POSSIBLE_MATCH", "CREATION_LIMIT_REACHED", "DEAL_NOT_FOUND", "CURRENT_OWNER_OUTSIDE_TEAM", "STAGE_REQUIRED_FIELDS"])
 
 export function crmErrorCode(body: unknown): string | null {
   const details = (body as { details?: unknown } | null)?.details
@@ -24,6 +26,16 @@ export function pickAvailableCampaignLeads<T extends { phone: string | null }>(c
   return picked
 }
 
+// Mesmos limites do CRM: um texto longo da planilha não pode fazer o lead inteiro ser recusado.
+const FALLBACK_LIMITS: Record<string, number> = { city: 100, state: 100, description: 10_000 }
+
+// Só pré-seleciona quando não há dúvida; caso contrário, o usuário escolhe na tela.
+export function defaultCrmDestination(pipelines: Array<{ id: string; name: string; stages: Array<{ id: string; name: string }> }>) {
+  const pipeline = pipelines.find(entry => entry.name.trim().toLowerCase() === "funil de vendas") ?? (pipelines.length === 1 ? pipelines[0] : null)
+  const stages = pipeline?.stages.filter(stage => /black/i.test(stage.name)) ?? []
+  return { pipelineId: pipeline?.id ?? "", stageId: stages.length === 1 ? stages[0].id : "" }
+}
+
 export function buildCrmRedistribution(input: {
   requestId: string
   campaignKey: string
@@ -34,12 +46,12 @@ export function buildCrmRedistribution(input: {
   pipelineId: string
   stageId: string
   reopenLost: boolean
-  // Último recurso, autorizado à parte. O CRM decide se pode criar; o Painel só envia os dados.
+  // Último recurso. O CRM decide se pode criar, sob as próprias travas; o Painel só envia os dados.
   createIfMissing?: { name: string | null; email?: string | null; company?: string | null; city?: string | null; state?: string | null; description?: string | null } | null
 }) {
   if (!input.phone?.trim()) throw new Error("campaign_phone_missing")
   const fallback = input.createIfMissing?.name?.trim()
-    ? Object.fromEntries(Object.entries(input.createIfMissing).flatMap(([key, value]) => value?.trim() ? [[key, value.trim()]] : []))
+    ? Object.fromEntries(Object.entries(input.createIfMissing).flatMap(([key, value]) => value?.trim() ? [[key, value.trim().slice(0, FALLBACK_LIMITS[key] ?? 200).trim()]] : []))
     : null
   return {
     method: REDISTRIBUTION_METHOD,

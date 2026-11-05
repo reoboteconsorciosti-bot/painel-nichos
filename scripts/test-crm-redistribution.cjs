@@ -16,7 +16,7 @@ function loader(mocks = {}) {
   return load
 }
 const load = loader()
-const { buildCrmRedistribution, isLegacyCampaignDelivery, pickAvailableCampaignLeads } = load('lib/crm-redistribution.ts')
+const { buildCrmRedistribution, defaultCrmDestination, isLegacyCampaignDelivery, pickAvailableCampaignLeads } = load('lib/crm-redistribution.ts')
 const { campaignPhoneKey, normalizeCampaignPhone, normalizeImportPhone } = load('lib/phone-normalization.ts')
 test('formats of the same phone share one key and different people do not', () => {
   for (const phone of ['65999990000', '5565999990000', '065999990000', '005565999990000','6599990000', '556599990000', '(65) 99999-0000', '02165999990000']) assert.equal(campaignPhoneKey(phone), '6599990000', phone)
@@ -30,6 +30,18 @@ test('a phone already distributed never returns in another format, even across e
   const leads = [{ id: 1, phone: '5565999990000' }, { id: 2, phone: '11988887777' }, { id: 3, phone: '011988887777' }, { id: 4, phone: null }, { id: 5, phone: '21977776666' }]
   assert.deepEqual(pickAvailableCampaignLeads(leads, ['065999990000']).map(lead => lead.id), [2, 5])
   assert.deepEqual(pickAvailableCampaignLeads(leads, [], 2).map(lead => lead.id), [1, 2])
+})
+test('long spreadsheet texts are cut to the CRM limits instead of refusing the lead', () => {
+  const { payload } = buildCrmRedistribution({ requestId: 'r', campaignKey: 'c', phone: '65999990000', actorId: 'a', ownerId: 'o', pipelineId: 'p', stageId: 's', reopenLost: true, createIfMissing: { name: 'n'.repeat(300), city: 'c'.repeat(150), email: '  ', description: 'd'.repeat(20_000) } })
+  assert.equal(payload.fallback.name.length, 200); assert.equal(payload.fallback.city.length, 100); assert.equal(payload.fallback.description.length, 10_000); assert.equal(payload.fallback.email, undefined)
+})
+test('the CRM destination is only preselected when there is no doubt', () => {
+  const vendas = { id: 'p1', name: 'Funil de Vendas', stages: [{ id: 's1', name: 'Novo' }, { id: 's2', name: 'BLACK NOVEMBER' }] }
+  const outro = { id: 'p2', name: 'Pós-venda', stages: [{ id: 's3', name: 'Black' }] }
+  assert.deepEqual(defaultCrmDestination([outro, vendas]), { pipelineId: 'p1', stageId: 's2' })
+  assert.deepEqual(defaultCrmDestination([outro]), { pipelineId: 'p2', stageId: 's3' })
+  assert.deepEqual(defaultCrmDestination([outro, { id: 'p3', name: 'Outro', stages: [] }]), { pipelineId: '', stageId: '' })
+  assert.deepEqual(defaultCrmDestination([{ ...vendas, stages: [{ id: 's1', name: 'Black 1' }, { id: 's2', name: 'Black 2' }] }]), { pipelineId: 'p1', stageId: '' })
 })
 const { mapImportRow } = load('lib/import-mapping.ts')
 test('campaign numbers preserve their source identity instead of inventing a WhatsApp', () => {
@@ -116,6 +128,14 @@ test('undoing an import keeps distributed leads reserved and only cancels what h
   assert.equal(response.status, 200)
   assert.equal(calls.claimDeletes, 0); assert.deepEqual(calls.deletedLeads, [2])
   assert.deepEqual(calls.claimUpdates.where.leadId.in, [1]); assert.equal(calls.claimUpdates.data.crmStatus, 'not_requested')
+})
+test('a lead the CRM refuses for good is settled with its reason, without review or resend', async () => {
+  const result = await exerciseWorker(job, { status: 404, ok: false, json: async () => ({ success: false, error: 'Não encontrado', details: [{ code: 'DEAL_NOT_FOUND' }] }) })
+  assert.equal(result.calls.length, 1); assert.equal(result.updates[0].status, 'skipped'); assert.equal(result.updates[0].error, 'Não encontrado')
+})
+test('a refusal unrelated to the lead still goes to review instead of settling the whole base', async () => {
+  const result = await exerciseWorker(job, { status: 403, ok: false, json: async () => ({ success: false, error: 'Sem permissão', details: [{ code: 'ACTOR_NOT_AUTHORIZED' }] }) })
+  assert.equal(result.updates[0].status, 'needs_review')
 })
 test('no match remains visible for review and never falls back to creating a deal', async () => {
   const result = await exerciseWorker(job, { status: 404, ok: false, json: async () => ({ success: false, error: 'Contato não encontrado' }) })
