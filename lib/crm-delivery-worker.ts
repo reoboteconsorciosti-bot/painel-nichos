@@ -48,7 +48,7 @@ export async function processNextCrmDelivery() {
   })
   if (!job) return
   const redistribute = job.method === REDISTRIBUTION_METHOD
-  if (isLegacyCampaignDelivery(job) || (redistribute && process.env.CRM_EXISTING_DEALS_ENABLED !== "true")) {
+  if (isLegacyCampaignDelivery(job)) {
     await prisma.crmDelivery.update({ where: { id: job.id }, data: {
       status: "needs_review",
       error: "Envio de campanha suspenso: esta ação precisa redistribuir um negócio existente no CRM. Confira a configuração antes de confirmar o envio.",
@@ -82,9 +82,9 @@ export async function processNextCrmDelivery() {
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "sent", warnings, error: null } })
       return
     }
-    if (response.ok && data?.success === true && typeof data?.data?.id === "string" && (!redistribute || (data.data.outcome === "updated" && typeof data.data.contactId === "string" && typeof data.data.auditId === "string"))) {
+    if (response.ok && data?.success === true && typeof data?.data?.id === "string" && (!redistribute || ((data.data.outcome === "updated" || data.data.outcome === "created") && typeof data.data.contactId === "string" && typeof data.data.auditId === "string"))) {
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "sent", crmDealId: data.data.id, warnings: Array.isArray(data.data.warnings) ? data.data.warnings : [], error: null } })
-      if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: data.data.warnings?.length ? "partial" : "sent" } })
+      if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: data.data.outcome === "created" ? "created" : data.data.warnings?.length ? "partial" : "sent" } })
     } else if (redistribute && crmErrorCode(data) === ALREADY_DISTRIBUTED_CODE) {
       // A trava do CRM funcionou: nada foi alterado e não há o que revisar nem reenviar.
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "skipped", error: typeof data?.error === "string" ? data.error : "Este contato já foi redistribuído nesta campanha." } })

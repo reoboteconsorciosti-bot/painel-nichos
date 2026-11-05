@@ -93,15 +93,13 @@ export async function POST(req: Request) {
     pipelineId?: unknown
     stageId?: unknown
     reopenLost?: unknown
+    createIfMissing?: unknown
   }
   const consultantId = String(body.consultantId ?? "").trim()
   const quantity = Number(body.quantity)
   const sendCRM = body.sendToCrm === true
   const pipelineId = typeof body.pipelineId === "string" ? body.pipelineId.trim() : ""
   const stageId = typeof body.stageId === "string" ? body.stageId.trim() : ""
-  if (sendCRM && process.env.CRM_EXISTING_DEALS_ENABLED !== "true") {
-    return NextResponse.json({ ok: false, error: "A redistribuição de negócios existentes no CRM ainda não está habilitada. Você pode liberar os leads apenas no Painel." }, { status: 409 })
-  }
   if (sendCRM && (!pipelineId || !stageId || pipelineId.length > 100 || stageId.length > 100)) {
     return NextResponse.json({ ok: false, error: "Escolha o funil e a etapa de destino no CRM." }, { status: 400 })
   }
@@ -163,7 +161,8 @@ export async function POST(req: Request) {
           return {
             leadId: lead.id, consultantCrmId: ownerId, idempotencyKey: requestId,
             ...buildCrmRedistribution({ requestId, campaignKey: campaign.nicho, phone: lead.phone, dealId: lead.crmDealId,
-              actorId: user.id, ownerId, pipelineId, stageId, reopenLost: body.reopenLost === true }),
+              actorId: user.id, ownerId, pipelineId, stageId, reopenLost: body.reopenLost === true,
+              createIfMissing: body.createIfMissing === true ? { name: lead.name, email: lead.email, company: lead.company || lead.fantasy, city: lead.city, state: lead.state, description: lead.dealDescription } : null }),
           }
         })
         if (deliveries.length) queuedCount = (await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })).count

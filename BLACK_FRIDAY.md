@@ -30,17 +30,18 @@ VALUES (2027, 'Black Friday 2027', 'black-friday-2027', true, DATE '2027-10-29',
 
 A campanha trabalha com os contatos e negócios que já existem no CRM. A importação alimenta apenas o Painel. Ao liberar os leads, o usuário pode marcar **Atualizar negócios existentes no CRM**, escolher o funil original e a etapa de destino. A opção começa desmarcada. Reabrir negócios perdidos exige uma autorização adicional na mesma tela.
 
-O Painel consulta os destinos em `GET /api/v1/painel-nichos/stages` e enfileira solicitações para `POST /api/v1/painel-nichos/redistributions`. O CRM localiza automaticamente pelo telefone/WhatsApp, valida o escopo do solicitante e atualiza responsável do negócio, responsável do contato e etapa na mesma transação da auditoria. Os telefones originais são preservados. Não existe fallback de criação de contato ou negócio.
+O Painel consulta os destinos em `GET /api/v1/painel-nichos/stages` e enfileira solicitações para `POST /api/v1/painel-nichos/redistributions`. O CRM localiza automaticamente pelo telefone/WhatsApp, valida o escopo do solicitante e atualiza responsável do negócio, responsável do contato e etapa na mesma transação da auditoria. Os telefones originais são preservados.
+
+Criar um negócio é o último recurso, porque os leads foram extraídos do próprio CRM. Só acontece se o usuário marcar a opção específica na liberação, que começa desmarcada. O CRM cria apenas se o telefone não for encontrado, o número for válido e não houver contato com o mesmo final de telefone, nome ou e-mail, ou se o contato encontrado não tiver nenhum negócio. O limite é de 20 criações por dia; acima disso, os itens ficam para revisão. O resultado aparece como **Negócio criado**.
 
 Casos sem correspondência, com vários contatos/negócios, fora do escopo ou com requisitos pendentes da etapa ficam para revisão. Solicitações antigas que criariam negócios da campanha também são suspensas para revisão pelo worker. Uma solicitação confirmada tem identificação estável, e o CRM impede uma segunda distribuição do mesmo contato na mesma campanha. Essa recusa aparece no Painel como **Já distribuído**, sem exigir revisão. Um lead cuja atualização falhou continua reservado: ele não volta para a distribuição, e o motivo aparece na lista de liberações e na exportação.
 
 ### Implantação coordenada
 
-1. Aplicar e revisar `CRM_REDISTRIBUICAO.patch` no repositório do CRM. A base usada para preparar o patch foi o commit `72eae9815738e0e11f8a644ee92595e5dbcab014`.
-2. No CRM, configurar `PAINEL_NICHOS_REASSIGN_API_KEY_ID` com o ID de uma chave dedicada autorizada. Esse valor não é o token secreto.
-3. Implantar a API do CRM e o Painel; validar o fluxo em homologação.
-4. No Painel, manter `CRM_API_URL` e `CRM_API_KEY` e configurar `CRM_EXISTING_DEALS_ENABLED=true` somente quando a nova API estiver pronta. Sem essa opção, a liberação local continua disponível e nenhuma nova redistribuição é enfileirada.
+1. Implantar o CRM.
+2. Implantar o Painel, que usa os `CRM_API_URL` e `CRM_API_KEY` já configurados. Não há variáveis novas.
+3. Validar com uma liberação de 1 ou 2 leads, marcando a atualização no CRM, e conferir o resultado lá.
 
-A ativação depende das duas variáveis acima. Sem elas, o código publicado não altera nenhum negócio. O patch usa tabelas existentes do CRM, sem migração nova naquele projeto. Se a migração de auditoria do Painel ainda não tiver sido aplicada, ela continua sendo necessária para a versão que grava esse histórico.
+Nenhum negócio é alterado sem marcar a opção na liberação. Se o Painel subir antes do CRM, as etapas não carregam e nada é enviado. A integração usa tabelas existentes do CRM, sem migração nova naquele projeto. Se a migração de auditoria do Painel ainda não tiver sido aplicada, ela continua sendo necessária para a versão que grava esse histórico.
 
 O histórico cronológico e os limites das verificações estão em `CONTEXTO_BLACK_FRIDAY.md`. Os testes do Painel são executados com `node --test scripts/test-crm-redistribution.cjs scripts/test-import-mapping.cjs`.

@@ -188,7 +188,9 @@ O pedido é assíncrono entre os sistemas: o Painel grava a liberação local e 
 
 ### Atualização de 5 de novembro de 2026
 
-O patch foi aplicado no repositório do CRM. O Painel ganhou a regra de que um lead distribuído não volta: a liberação compara a chave `campaignPhoneKey` com todas as reservas de qualquer edição, sob o mesmo bloqueio da distribuição, sem migração de banco. Desfazer uma importação não apaga mais reservas nem leads distribuídos. A recusa `CONTACT_ALREADY_DISTRIBUTED` do CRM tem desfecho próprio (`skipped` na fila, `already_distributed` na reserva), e o motivo de cada falha aparece na lista de liberações. Continua valendo que o fluxo só atua depois de configurar as variáveis e de um primeiro envio pequeno de conferência com PostgreSQL e RLS reais.
+O patch foi aplicado no repositório do CRM. O Painel ganhou a regra de que um lead distribuído não volta: a liberação compara a chave `campaignPhoneKey` com todas as reservas de qualquer edição, sob o mesmo bloqueio da distribuição, sem migração de banco. Desfazer uma importação não apaga mais reservas nem leads distribuídos. A recusa `CONTACT_ALREADY_DISTRIBUTED` do CRM tem desfecho próprio (`skipped` na fila, `already_distributed` na reserva), e o motivo de cada falha aparece na lista de liberações. 
+
+Por decisão do usuário, as variáveis `PAINEL_NICHOS_REASSIGN_API_KEY_ID` e `CRM_EXISTING_DEALS_ENABLED` foram removidas: a marcação na liberação é a autorização, e o CRM aceita qualquer chave válida da organização, conferindo o solicitante a cada chamada. Também por decisão do usuário, foi criado um último recurso que substitui a regra anterior de nunca criar: com uma opção própria marcada, o CRM cria o negócio quando nada é encontrado, sob as travas descritas em `BLACK_FRIDAY.md` e com limite de 20 criações por dia. Trechos anteriores deste relato sobre essas variáveis e sobre "não criar" descrevem o histórico. O primeiro envio deve ser pequeno, porque o fluxo ainda não rodou com PostgreSQL e RLS reais.
 
 ## 16. Como enxergamos o projeto daqui para frente
 
@@ -209,7 +211,7 @@ O projeto também precisa consolidar o processo de implantação: migrações ne
 - A importação da Black não é autorização de escrita no CRM.
 - A redistribuição só acontece por uma ação explícita de quem usa o Painel.
 - Telefone e WhatsApp são campos distintos; um formato legado pode servir para busca mesmo quando não seria aceito como novo WhatsApp.
-- A integração de negócios antigos não deve criar novos contatos ou negócios como alternativa a uma busca que falhou.
+- Criar contato ou negócio quando a busca falha é o último recurso: exige autorização própria na liberação e passa pelas travas do CRM.
 - Os IDs devem ser encontrados automaticamente no CRM, com vínculo confirmado entre contato e negócio.
 - Uma ambiguidade precisa ficar visível; não deve ser resolvida escolhendo um cadastro arbitrário.
 - Responsável do contato, responsável do negócio, etapa e auditoria devem ser coerentes e gravados atomicamente.
@@ -229,7 +231,6 @@ O projeto também precisa consolidar o processo de implantação: migrações ne
 - Auditoria do Painel: `DistributionAudit` no schema e a tela de auditoria de listas.
 - Nova integração no Painel: `lib/crm-redistribution.ts`, rota da Black Friday e worker de entregas.
 - Novos testes do Painel: `scripts/test-crm-redistribution.cjs`.
-- Alterações do CRM para aplicação e revisão: `CRM_REDISTRIBUICAO.patch`.
-- Checkout isolado usado na implementação do CRM: `C:\Users\Gabriel\AppData\Local\Temp\crm-nichos-reassign-20261104`.
+- Alterações do CRM: `lib/api/painel-redistribution.ts` e `docs/painel-nichos-redistribution.md`, no repositório do CRM.
 
 Este arquivo é um contexto de continuidade. Antes de aplicar alterações em produção, conferir a versão atual dos dois repositórios e o que de fato foi implantado desde esta atualização.

@@ -52,8 +52,8 @@ test('legacy campaign creates are recognized regardless of source spelling', () 
   assert.equal(isLegacyCampaignDelivery({ method: 'POST', idempotencyKey: 'list:1:lead:2', payload: {} }), false)
 })
 
-async function exerciseWorker(job, enabled, response) {
-  const oldFetch = global.fetch; const oldEnabled = process.env.CRM_EXISTING_DEALS_ENABLED
+async function exerciseWorker(job, response) {
+  const oldFetch = global.fetch
   const oldBase = process.env.CRM_API_URL; const oldKey = process.env.CRM_API_KEY
   const calls = []; const updates = []
   let reads = 0
@@ -62,31 +62,39 @@ async function exerciseWorker(job, enabled, response) {
     findMany: async () => [], update: async () => job,
   } }
   const fakePrisma = { $transaction: async cb => cb(tx), crmDelivery: { update: async args => { updates.push(args.data); return job } }, blackFridayLead: { updateMany: async () => ({ count: 1 }) } }
-  process.env.CRM_EXISTING_DEALS_ENABLED = enabled ? 'true' : 'false'
   process.env.CRM_API_URL = 'https://crm.invalid'; process.env.CRM_API_KEY = 'fake-test-key'
   global.fetch = async (url, opts) => { calls.push({ url, opts }); return response }
   try { await loader({ '@/lib/prisma': { prisma: fakePrisma } })('lib/crm-delivery-worker.ts').processNextCrmDelivery(); return { calls, updates } }
   finally {
     global.fetch = oldFetch
-    for (const [key, value] of Object.entries({ CRM_EXISTING_DEALS_ENABLED: oldEnabled, CRM_API_URL: oldBase, CRM_API_KEY: oldKey })) {
+    for (const [key, value] of Object.entries({ CRM_API_URL: oldBase, CRM_API_KEY: oldKey })) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value
     }
   }
 }
 const job = { id: 1, method: 'REDISTRIBUTE', idempotencyKey: 'black-friday:1:lead:2', leadId: 2, listaId: null, payload: { requestId: 'r', phone: '0624250000' } }
-test('disabled integration and old campaign jobs execute no network request', async () => {
-  for (const [item, enabled] of [[job, false], [{ ...job, method: 'POST' }, true]]) {
-    const result = await exerciseWorker(item, enabled)
-    assert.equal(result.calls.length, 0); assert.equal(result.updates[0].status, 'needs_review')
-  }
+test('old campaign jobs execute no network request', async () => {
+  const result = await exerciseWorker({ ...job, method: 'POST' })
+  assert.equal(result.calls.length, 0); assert.equal(result.updates[0].status, 'needs_review')
+})
+test('the last resort is only requested when explicitly authorized, with a name', () => {
+  const base = { requestId: 'r', campaignKey: 'c', phone: '65999990000', actorId: 'a', ownerId: 'o', pipelineId: 'p', stageId: 's', reopenLost: false }
+  assert.equal(buildCrmRedistribution(base).payload.createIfMissing, undefined)
+  assert.equal(buildCrmRedistribution({ ...base, createIfMissing: { name: '  ' } }).payload.createIfMissing, undefined)
+  const { payload } = buildCrmRedistribution({ ...base, createIfMissing: { name: 'Ana', email: null, description: 'Nota' } })
+  assert.equal(payload.createIfMissing, true); assert.deepEqual(payload.fallback, { name: 'Ana', description: 'Nota' })
+})
+test('a deal created as last resort is reported as created', async () => {
+  const result = await exerciseWorker(job, { status: 200, ok: true, json: async () => ({ success: true, data: { id: 'deal', contactId: 'contact', outcome: 'created', auditId: 'audit', warnings: [] } }) })
+  assert.equal(result.updates[0].status, 'sent')
 })
 test('worker only calls the redistribution endpoint and preserves original lookup digits', async () => {
-  const result = await exerciseWorker(job, true, { status: 200, ok: true, json: async () => ({ success: true, data: { id: 'deal', contactId: 'contact', outcome: 'updated', auditId: 'audit', warnings: [] } }) })
+  const result = await exerciseWorker(job, { status: 200, ok: true, json: async () => ({ success: true, data: { id: 'deal', contactId: 'contact', outcome: 'updated', auditId: 'audit', warnings: [] } }) })
   assert.equal(result.calls.length, 1); assert.ok(result.calls[0].url.endsWith('/api/v1/painel-nichos/redistributions'))
   assert.equal(JSON.parse(result.calls[0].opts.body).phone, '0624250000'); assert.equal(result.updates[0].status, 'sent')
 })
 test('a contact the CRM already distributed is settled, not an error to resend', async () => {
-  const result = await exerciseWorker(job, true, { status: 409, ok: false, json: async () => ({ success: false, error: 'Já redistribuído', details: [{ code: 'CONTACT_ALREADY_DISTRIBUTED' }] }) })
+  const result = await exerciseWorker(job, { status: 409, ok: false, json: async () => ({ success: false, error: 'Já redistribuído', details: [{ code: 'CONTACT_ALREADY_DISTRIBUTED' }] }) })
   assert.equal(result.calls.length, 1); assert.equal(result.updates[0].status, 'skipped')
 })
 test('undoing an import keeps distributed leads reserved and only cancels what has not left', async () => {
@@ -110,6 +118,6 @@ test('undoing an import keeps distributed leads reserved and only cancels what h
   assert.deepEqual(calls.claimUpdates.where.leadId.in, [1]); assert.equal(calls.claimUpdates.data.crmStatus, 'not_requested')
 })
 test('no match remains visible for review and never falls back to creating a deal', async () => {
-  const result = await exerciseWorker(job, true, { status: 404, ok: false, json: async () => ({ success: false, error: 'Contato não encontrado' }) })
+  const result = await exerciseWorker(job, { status: 404, ok: false, json: async () => ({ success: false, error: 'Contato não encontrado' }) })
   assert.equal(result.calls.length, 1); assert.equal(result.updates[0].status, 'needs_review')
 })

@@ -33,6 +33,7 @@ export function BlackFridayPanel() {
   const [pipelineId, setPipelineId] = useState("")
   const [stageId, setStageId] = useState("")
   const [reopenLost, setReopenLost] = useState(false)
+  const [createIfMissing, setCreateIfMissing] = useState(false)
   const [crmSetupLoading, setCrmSetupLoading] = useState(false)
   const [crmConfigured, setCrmConfigured] = useState(false)
   const [crmSetupError, setCrmSetupError] = useState("")
@@ -109,7 +110,7 @@ export function BlackFridayPanel() {
           consultantId: selectedConsultant,
           quantity: numericQuantity,
           sendToCrm,
-          ...(sendToCrm ? { pipelineId, stageId, reopenLost } : {}),
+          ...(sendToCrm ? { pipelineId, stageId, reopenLost, createIfMissing } : {}),
         }),
       })
       const result = await response.json()
@@ -193,7 +194,7 @@ export function BlackFridayPanel() {
     <>
       <button
         type="button"
-        onClick={() => { setOpen(true); setSendToCrm(false); setPipelineId(""); setStageId(""); setReopenLost(false); setError(""); setNotice("") }}
+        onClick={() => { setOpen(true); setSendToCrm(false); setPipelineId(""); setStageId(""); setReopenLost(false); setCreateIfMissing(false); setError(""); setNotice("") }}
         className="group relative flex h-[280px] w-full flex-col justify-between overflow-hidden rounded-2xl border border-amber-400/25 bg-card p-6 text-left shadow-lg transition-all duration-300 hover:-translate-y-1 hover:scale-[1.02] hover:border-amber-300/50 hover:shadow-2xl"
       >
         <div className="absolute inset-0 bg-gradient-to-br from-amber-500/20 via-orange-500/10 to-transparent opacity-80 transition-opacity group-hover:opacity-100" />
@@ -251,6 +252,7 @@ export function BlackFridayPanel() {
                   <label className="block space-y-1 text-sm">Funil do negócio original<select value={pipelineId} onChange={event => { setPipelineId(event.target.value); setStageId("") }} disabled={submitting} className="h-10 w-full rounded-md border border-border bg-background px-3"><option value="">Escolha o funil</option>{pipelines.map(pipeline => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</select></label>
                   <label className="block space-y-1 text-sm">Mover para a etapa<select value={stageId} onChange={event => setStageId(event.target.value)} disabled={submitting || !pipelineId} className="h-10 w-full rounded-md border border-border bg-background px-3"><option value="">Escolha a etapa</option>{pipelines.find(pipeline => pipeline.id === pipelineId)?.stages.map(stage => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>
                   <label className="flex items-start gap-2 text-xs text-muted-foreground"><Checkbox checked={reopenLost} onCheckedChange={checked => setReopenLost(checked === true)} disabled={submitting} />Reabrir os negócios perdidos encontrados para trabalhar nesta campanha.</label>
+                  <label className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-400/5 p-2 text-xs text-muted-foreground"><Checkbox checked={createIfMissing} onCheckedChange={checked => setCreateIfMissing(checked === true)} disabled={submitting} /><span><strong className="text-foreground">Último recurso:</strong> criar um negócio novo quando não houver nada no CRM. Os leads vieram do CRM, então isso deve ser raro. Nada é criado se houver contato parecido, telefone inválido ou mais de 20 criações no dia.</span></label>
                 </>}
                 <p className="text-xs text-muted-foreground">Casos sem correspondência ou com vários negócios ficam para revisão. Telefones e histórico dos cadastros originais são preservados.</p>
               </div>}
@@ -286,7 +288,7 @@ export function BlackFridayPanel() {
               <div className="max-h-64 overflow-auto rounded-lg border border-border">
                 <table className="w-full text-left text-xs">
                   <thead className="sticky top-0 bg-secondary text-muted-foreground"><tr><th className="p-2">Consultor</th><th className="p-2">Lead</th><th className="p-2">Telefone</th><th className="p-2">CRM</th></tr></thead>
-                  <tbody>{data.allocations.map((allocation) => <tr key={allocation.id} className="border-t border-border"><td className="p-2">{allocation.consultant.name}</td><td className="p-2">{allocation.lead.name ?? "—"}</td><td className="p-2">{allocation.lead.phone ?? "—"}</td><td className="p-2">{allocation.crmStatus === "sent" ? "Enviado" : allocation.crmStatus === "partial" ? "Parcial" : allocation.crmStatus === "error" ? "Com erro" : allocation.crmStatus === "pending" ? "Pendente" : allocation.crmStatus === "already_distributed" ? "Já distribuído" : "—"}{allocation.crmError && <p className="mt-1 max-w-64 text-muted-foreground">{allocation.crmError}</p>}</td></tr>)}</tbody>
+                  <tbody>{data.allocations.map((allocation) => <tr key={allocation.id} className="border-t border-border"><td className="p-2">{allocation.consultant.name}</td><td className="p-2">{allocation.lead.name ?? "—"}</td><td className="p-2">{allocation.lead.phone ?? "—"}</td><td className="p-2">{allocation.crmStatus === "sent" ? "Enviado" : allocation.crmStatus === "created" ? "Negócio criado" :allocation.crmStatus === "partial" ? "Parcial" : allocation.crmStatus === "error" ? "Com erro" : allocation.crmStatus === "pending" ? "Pendente" : allocation.crmStatus === "already_distributed" ? "Já distribuído" : "—"}{allocation.crmError && <p className="mt-1 max-w-64 text-muted-foreground">{allocation.crmError}</p>}</td></tr>)}</tbody>
                 </table>
               </div>
             )}

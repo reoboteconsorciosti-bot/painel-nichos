@@ -34,8 +34,13 @@ export function buildCrmRedistribution(input: {
   pipelineId: string
   stageId: string
   reopenLost: boolean
+  // Último recurso, autorizado à parte. O CRM decide se pode criar; o Painel só envia os dados.
+  createIfMissing?: { name: string | null; email?: string | null; company?: string | null; city?: string | null; state?: string | null; description?: string | null } | null
 }) {
   if (!input.phone?.trim()) throw new Error("campaign_phone_missing")
+  const fallback = input.createIfMissing?.name?.trim()
+    ? Object.fromEntries(Object.entries(input.createIfMissing).flatMap(([key, value]) => value?.trim() ? [[key, value.trim()]] : []))
+    : null
   return {
     method: REDISTRIBUTION_METHOD,
     crmDealId: input.dealId ?? null,
@@ -49,6 +54,7 @@ export function buildCrmRedistribution(input: {
       reopenLost: input.reopenLost,
       phone: input.phone.trim(),
       ...(input.dealId ? { dealId: input.dealId } : {}),
+      ...(fallback ? { createIfMissing: true, fallback } : {}),
     },
   }
 }

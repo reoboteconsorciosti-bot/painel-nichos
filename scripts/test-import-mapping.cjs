@@ -275,15 +275,7 @@ test("campanha usa redistribuição do negócio existente, com etapa e solicitan
     "@/lib/server-users": { getInitialUsers: () => [] },
     "@/lib/lead-visibility": { canViewGlobalLeadCounts: async () => true },
   })("app/api/black-friday/route.ts")
-  const enabledBefore = process.env.CRM_EXISTING_DEALS_ENABLED
-  process.env.CRM_EXISTING_DEALS_ENABLED = "true"
-  let response
-  try {
-    response = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1, sendToCrm: true, pipelineId: "pipeline", stageId: "stage" }) }))
-  } finally {
-    if (enabledBefore === undefined) delete process.env.CRM_EXISTING_DEALS_ENABLED
-    else process.env.CRM_EXISTING_DEALS_ENABLED = enabledBefore
-  }
+  const response = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1, sendToCrm: true, pipelineId: "pipeline", stageId: "stage" }) }))
   assert.equal(response.status, 200)
   assert.equal(queued[0].consultantCrmId, "crm-ana")
   assert.equal(queued[0].method, "REDISTRIBUTE")
