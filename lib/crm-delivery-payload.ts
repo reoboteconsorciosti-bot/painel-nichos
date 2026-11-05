@@ -1,3 +1,5 @@
+import { normalizeCrmPhone } from "@/lib/phone-normalization"
+
 export type CrmLead = {
   id: number
   name: string | null
@@ -27,7 +29,7 @@ export function buildCrmDelivery(lead: CrmLead, nicho: string, ownerId: string |
     payload: {
       contact: {
         name: lead.name,
-        ...(lead.phone ? { whatsapp: lead.phone } : {}),
+        ...(lead.phone ? { whatsapp: normalizeCrmPhone(lead.phone) } : {}),
         ...(lead.email ? { email: lead.email } : {}),
         ...(lead.jobTitle ? { jobTitle: lead.jobTitle } : {}),
         ...(lead.city ? { city: lead.city } : {}),
@@ -40,6 +42,23 @@ export function buildCrmDelivery(lead: CrmLead, nicho: string, ownerId: string |
       description,
       source,
     },
+  }
+}
+
+export function normalizeCrmPayloadPhones(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload
+  const value = payload as Record<string, unknown>
+  const normalizeContact = (contact: unknown): unknown => {
+    if (!contact || typeof contact !== "object" || Array.isArray(contact)) return contact
+    const fields = contact as Record<string, unknown>
+    return typeof fields.whatsapp === "string" && fields.whatsapp.trim()
+      ? { ...fields, whatsapp: normalizeCrmPhone(fields.whatsapp) }
+      : contact
+  }
+  return {
+    ...value,
+    ...(value.contact ? { contact: normalizeContact(value.contact) } : {}),
+    ...(Array.isArray(value.contacts) ? { contacts: value.contacts.map(normalizeContact) } : {}),
   }
 }
 

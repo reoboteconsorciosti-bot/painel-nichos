@@ -16,6 +16,7 @@ type CampaignData = {
     id: number
     assignedAt: string
     crmStatus: string
+    crmError: string | null
     consultant: { id: string; name: string }
     lead: { id: number; name: string | null; phone: string | null; city: string | null; state: string | null; company: string | null; fantasy: string | null }
   }>
@@ -28,6 +29,13 @@ export function BlackFridayPanel() {
   const [selectedConsultant, setSelectedConsultant] = useState("")
   const [quantity, setQuantity] = useState("")
   const [sendToCrm, setSendToCrm] = useState(false)
+  const [pipelines, setPipelines] = useState<Array<{ id: string; name: string; stages: Array<{ id: string; name: string }> }>>([])
+  const [pipelineId, setPipelineId] = useState("")
+  const [stageId, setStageId] = useState("")
+  const [reopenLost, setReopenLost] = useState(false)
+  const [crmSetupLoading, setCrmSetupLoading] = useState(false)
+  const [crmConfigured, setCrmConfigured] = useState(false)
+  const [crmSetupError, setCrmSetupError] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
@@ -49,6 +57,26 @@ export function BlackFridayPanel() {
 
   useEffect(() => { void refresh() }, [refresh])
 
+  useEffect(() => {
+    if (!open || !sendToCrm) return
+    const controller = new AbortController()
+    setCrmSetupLoading(true)
+    setCrmConfigured(false)
+    setCrmSetupError("")
+    fetch("/api/crm/redistribution-stages", { credentials: "include", cache: "no-store", signal: controller.signal })
+      .then(async response => {
+        const result = await response.json()
+        if (!response.ok || !result.ok) throw new Error(result.error || "Não foi possível carregar as etapas do CRM.")
+        if (controller.signal.aborted) return
+        setPipelines(Array.isArray(result.pipelines) ? result.pipelines : [])
+        setCrmConfigured(result.configured === true)
+        if (!result.configured) setCrmSetupError("A atualização de negócios existentes no CRM ainda está desativada. Você pode liberar os leads apenas no Painel.")
+      })
+      .catch(cause => { if (!controller.signal.aborted) setCrmSetupError(cause instanceof Error ? cause.message : "Não foi possível carregar as etapas do CRM.") })
+      .finally(() => { if (!controller.signal.aborted) setCrmSetupLoading(false) })
+    return () => controller.abort()
+  }, [open, sendToCrm])
+
   const maxQuantity = data?.available ?? null
   const formattedDate = useMemo(() => {
     if (!data?.campaign?.endsAt) return ""
@@ -67,6 +95,10 @@ export function BlackFridayPanel() {
       setError(`Há ${maxQuantity} leads disponíveis para esta campanha.`)
       return
     }
+    if (sendToCrm && (!crmConfigured || !pipelineId || !stageId)) {
+      setError("Escolha o funil e a etapa para atualizar os negócios existentes no CRM.")
+      return
+    }
     setSubmitting(true)
     try {
       const response = await fetch("/api/black-friday", {
@@ -77,6 +109,7 @@ export function BlackFridayPanel() {
           consultantId: selectedConsultant,
           quantity: numericQuantity,
           sendToCrm,
+          ...(sendToCrm ? { pipelineId, stageId, reopenLost } : {}),
         }),
       })
       const result = await response.json()
@@ -97,7 +130,7 @@ export function BlackFridayPanel() {
       const crm = result.crm as { configured?: boolean; queuedCount?: number; createdCount?: number; ignoredCount?: number; warnings?: string[] } | null
       setNotice(sendToCrm
         ? crm?.configured
-          ? crm.queuedCount ? `${result.leads.length} leads liberados. ${crm.queuedCount} envios na fila do CRM. Acompanhe no painel.` : `${result.leads.length} leads liberados. ${crm.createdCount ?? 0} negócios criados no CRM e ${crm.ignoredCount ?? 0} não criados.${crm.warnings?.length ? ` Aviso: ${crm.warnings.join(", ")}` : ""}`
+          ? `${result.leads.length} leads liberados. ${crm.queuedCount ?? 0} atualizações de negócios existentes na fila do CRM. Acompanhe os resultados no painel.`
           : `${result.leads.length} leads liberados, mas o CRM não está configurado neste ambiente.`
         : `${result.leads.length} leads liberados para ${result.consultant.name}.`)
       setQuantity("")
@@ -111,7 +144,7 @@ export function BlackFridayPanel() {
 
   const exportAllocations = () => {
     if (!data?.allocations.length) return
-    const rows = data.allocations.map(({ lead, consultant, assignedAt, crmStatus }) => ({
+    const rows = data.allocations.map(({ lead, consultant, assignedAt, crmStatus, crmError }) => ({
       Consultor: consultant.name,
       Nome: lead.name ?? "",
       Telefone: lead.phone ?? "",
@@ -120,6 +153,7 @@ export function BlackFridayPanel() {
       Empresa: lead.company ?? lead.fantasy ?? "",
       "Liberado em": new Date(assignedAt).toLocaleString("pt-BR"),
       "Status CRM": crmStatus,
+      "Motivo CRM": crmError ?? "",
     }))
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Black Friday")
@@ -159,7 +193,7 @@ export function BlackFridayPanel() {
     <>
       <button
         type="button"
-        onClick={() => { setOpen(true); setSendToCrm(false); setError(""); setNotice("") }}
+        onClick={() => { setOpen(true); setSendToCrm(false); setPipelineId(""); setStageId(""); setReopenLost(false); setError(""); setNotice("") }}
         className="group relative flex h-[280px] w-full flex-col justify-between overflow-hidden rounded-2xl border border-amber-400/25 bg-card p-6 text-left shadow-lg transition-all duration-300 hover:-translate-y-1 hover:scale-[1.02] hover:border-amber-300/50 hover:shadow-2xl"
       >
         <div className="absolute inset-0 bg-gradient-to-br from-amber-500/20 via-orange-500/10 to-transparent opacity-80 transition-opacity group-hover:opacity-100" />
@@ -206,17 +240,26 @@ export function BlackFridayPanel() {
               <div className="flex items-start gap-3 rounded-lg border border-border bg-background/60 p-3">
                 <Checkbox id="black-friday-send-crm" checked={sendToCrm} onCheckedChange={(checked) => setSendToCrm(checked === true)} disabled={submitting} />
                 <div className="space-y-1">
-                  <Label htmlFor="black-friday-send-crm" className="flex cursor-pointer items-center gap-2 text-sm font-medium"><Zap className="size-4 text-amber-400" />Enviar para o CRM</Label>
-                  <p className="text-xs text-muted-foreground">Os leads serão liberados mesmo se o CRM estiver indisponível.</p>
+                  <Label htmlFor="black-friday-send-crm" className="flex cursor-pointer items-center gap-2 text-sm font-medium"><Zap className="size-4 text-amber-400" />Atualizar negócios existentes no CRM</Label>
+                  <p className="text-xs text-muted-foreground">Localiza pelo telefone e transfere o contato e o negócio para o consultor escolhido.</p>
                 </div>
               </div>
-              {sendToCrm && <p className="text-xs text-muted-foreground">O consultor escolhido recebe os contatos e os negócios no CRM. Acompanhe o envio no painel.</p>}
+              {sendToCrm && <div className="space-y-3 rounded-lg border border-border p-3">
+                {crmSetupLoading && <p className="text-xs text-muted-foreground">Carregando etapas do CRM...</p>}
+                {crmSetupError && <p role="alert" className="text-xs text-amber-400">{crmSetupError}</p>}
+                {crmConfigured && <>
+                  <label className="block space-y-1 text-sm">Funil do negócio original<select value={pipelineId} onChange={event => { setPipelineId(event.target.value); setStageId("") }} disabled={submitting} className="h-10 w-full rounded-md border border-border bg-background px-3"><option value="">Escolha o funil</option>{pipelines.map(pipeline => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</select></label>
+                  <label className="block space-y-1 text-sm">Mover para a etapa<select value={stageId} onChange={event => setStageId(event.target.value)} disabled={submitting || !pipelineId} className="h-10 w-full rounded-md border border-border bg-background px-3"><option value="">Escolha a etapa</option>{pipelines.find(pipeline => pipeline.id === pipelineId)?.stages.map(stage => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>
+                  <label className="flex items-start gap-2 text-xs text-muted-foreground"><Checkbox checked={reopenLost} onCheckedChange={checked => setReopenLost(checked === true)} disabled={submitting} />Reabrir os negócios perdidos encontrados para trabalhar nesta campanha.</label>
+                </>}
+                <p className="text-xs text-muted-foreground">Casos sem correspondência ou com vários negócios ficam para revisão. Telefones e histórico dos cadastros originais são preservados.</p>
+              </div>}
 
               {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
               {notice && <p role="status" className="text-sm text-emerald-500">{notice}</p>}
-              <button type="button" onClick={handleAssign} disabled={submitting || data.consultants.length === 0 || !selectedConsultant || maxQuantity === 0} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+              <button type="button" onClick={handleAssign} disabled={submitting || data.consultants.length === 0 || !selectedConsultant || maxQuantity === 0 || (sendToCrm && (crmSetupLoading || !crmConfigured || !pipelineId || !stageId))} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
                 {submitting ? <LoaderCircle className="size-4 animate-spin" /> : sendToCrm ? <Zap className="size-4" /> : <Check className="size-4" />}
-                {submitting ? "Liberando leads…" : sendToCrm ? "Liberar e enviar ao CRM" : "Liberar leads"}
+                {submitting ? "Liberando leads…" : sendToCrm ? "Liberar e atualizar no CRM" : "Liberar leads"}
               </button>
             </div>
 
@@ -243,7 +286,7 @@ export function BlackFridayPanel() {
               <div className="max-h-64 overflow-auto rounded-lg border border-border">
                 <table className="w-full text-left text-xs">
                   <thead className="sticky top-0 bg-secondary text-muted-foreground"><tr><th className="p-2">Consultor</th><th className="p-2">Lead</th><th className="p-2">Telefone</th><th className="p-2">CRM</th></tr></thead>
-                  <tbody>{data.allocations.map((allocation) => <tr key={allocation.id} className="border-t border-border"><td className="p-2">{allocation.consultant.name}</td><td className="p-2">{allocation.lead.name ?? "—"}</td><td className="p-2">{allocation.lead.phone ?? "—"}</td><td className="p-2">{allocation.crmStatus === "sent" ? "Enviado" : allocation.crmStatus === "partial" ? "Parcial" : allocation.crmStatus === "error" ? "Com erro" : allocation.crmStatus === "pending" ? "Pendente" : "—"}</td></tr>)}</tbody>
+                  <tbody>{data.allocations.map((allocation) => <tr key={allocation.id} className="border-t border-border"><td className="p-2">{allocation.consultant.name}</td><td className="p-2">{allocation.lead.name ?? "—"}</td><td className="p-2">{allocation.lead.phone ?? "—"}</td><td className="p-2">{allocation.crmStatus === "sent" ? "Enviado" : allocation.crmStatus === "partial" ? "Parcial" : allocation.crmStatus === "error" ? "Com erro" : allocation.crmStatus === "pending" ? "Pendente" : allocation.crmStatus === "already_distributed" ? "Já distribuído" : "—"}{allocation.crmError && <p className="mt-1 max-w-64 text-muted-foreground">{allocation.crmError}</p>}</td></tr>)}</tbody>
                 </table>
               </div>
             )}

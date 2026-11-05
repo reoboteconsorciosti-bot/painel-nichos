@@ -1,4 +1,4 @@
-import { buildCrmDelivery } from "@/lib/crm-delivery-payload"
+import { buildCrmRedistribution, pickAvailableCampaignLeads } from "@/lib/crm-redistribution"
 import { NextResponse } from "next/server"
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
@@ -21,6 +21,18 @@ async function getActiveCampaign() {
   })
 }
 
+async function findAvailableCampaignLeads(db: Prisma.TransactionClient, nicho: string, limit?: number) {
+  const [candidates, claims] = await Promise.all([
+    db.lead.findMany({
+      where: { nicho, listaLeads: { none: {} }, blackFridayClaim: { is: null } },
+      orderBy: { id: "asc" },
+      select: { id: true, phone: true },
+    }),
+    db.blackFridayLead.findMany({ select: { lead: { select: { phone: true } } } }),
+  ])
+  return pickAvailableCampaignLeads(candidates, claims.map((claim) => claim.lead.phone), limit)
+}
+
 function noAccess() {
   return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
 }
@@ -34,18 +46,21 @@ export async function GET(req: Request) {
     const campaign = await getActiveCampaign()
     if (!campaign) return NextResponse.json({ ok: true, campaign: null, consultants: [], allocations: [], available: countsVisible ? 0 : null, countsVisible })
 
-    const [consultants, available, allocations] = await Promise.all([
+    const [consultants, available, allocations, crmProblems] = await Promise.all([
       syncCRMConsultants(user),
-      countsVisible ? prisma.lead.count({
-        where: { nicho: campaign.nicho, listaLeads: { none: {} }, blackFridayClaim: { is: null } },
-      }) : Promise.resolve(null),
+      countsVisible ? findAvailableCampaignLeads(prisma, campaign.nicho).then((leads) => leads.length) : Promise.resolve(null),
       prisma.blackFridayLead.findMany({
         where: { campaignId: campaign.id, ...(user.role === "admin" ? {} : { supervisorId: user.id }) },
         orderBy: { assignedAt: "desc" },
         include: { consultant: { select: { id: true, name: true } }, lead: true },
       }),
+      prisma.crmDelivery.findMany({
+        where: { idempotencyKey: { startsWith: `black-friday:${campaign.id}:lead:` }, status: { in: ["failed", "needs_review", "skipped"] } },
+        select: { leadId: true, error: true },
+      }),
     ])
 
+    const crmErrors = new Map(crmProblems.map((problem) => [problem.leadId, problem.error]))
     const hiddenUserNames = new Set(getInitialUsers().map((entry) => entry.name.trim().toLowerCase()).filter(Boolean))
     return NextResponse.json({
       ok: true,
@@ -56,6 +71,7 @@ export async function GET(req: Request) {
       allocations: allocations.map(({ lead, consultant, ...assignment }) => ({
         ...assignment,
         consultant: consultant ?? { id: assignment.consultantId ?? "removed", name: assignment.consultantName },
+        crmError: crmErrors.get(assignment.leadId) ?? null,
         lead,
       })),
     })
@@ -74,10 +90,21 @@ export async function POST(req: Request) {
     quantity?: unknown
     sendToCrm?: unknown
     crmOwnerId?: unknown
+    pipelineId?: unknown
+    stageId?: unknown
+    reopenLost?: unknown
   }
   const consultantId = String(body.consultantId ?? "").trim()
   const quantity = Number(body.quantity)
   const sendCRM = body.sendToCrm === true
+  const pipelineId = typeof body.pipelineId === "string" ? body.pipelineId.trim() : ""
+  const stageId = typeof body.stageId === "string" ? body.stageId.trim() : ""
+  if (sendCRM && process.env.CRM_EXISTING_DEALS_ENABLED !== "true") {
+    return NextResponse.json({ ok: false, error: "A redistribuição de negócios existentes no CRM ainda não está habilitada. Você pode liberar os leads apenas no Painel." }, { status: 409 })
+  }
+  if (sendCRM && (!pipelineId || !stageId || pipelineId.length > 100 || stageId.length > 100)) {
+    return NextResponse.json({ ok: false, error: "Escolha o funil e a etapa de destino no CRM." }, { status: 400 })
+  }
 
   if (!consultantId || !Number.isSafeInteger(quantity) || quantity < 1) {
     return NextResponse.json({ ok: false, error: "invalid_payload" }, { status: 400 })
@@ -109,16 +136,9 @@ export async function POST(req: Request) {
       })
       if (!consultant) throw new Error("consultant_outside_team")
 
-      const leads = await tx.lead.findMany({
-        where: {
-          nicho: campaign.nicho,
-          listaLeads: { none: {} },
-          blackFridayClaim: { is: null },
-        },
-        orderBy: { id: "asc" },
-        take: quantity,
-      })
-      if (leads.length === 0) throw new Error("no_leads_available")
+      const available = await findAvailableCampaignLeads(tx, campaign.nicho, quantity)
+      if (available.length === 0) throw new Error("no_leads_available")
+      const leads = await tx.lead.findMany({ where: { id: { in: available.map((lead) => lead.id) } }, orderBy: { id: "asc" } })
 
       const assignedAt = new Date()
 
@@ -134,21 +154,19 @@ export async function POST(req: Request) {
         })),
       })
 
+      let queuedCount = 0
       if (sendCRM) {
         const ownerId = allowedConsultants.find(entry => entry.id === consultant.id)?.crmUserId
         if (!ownerId) throw new Error("consultant_crm_id_missing")
         const deliveries = leads.map(lead => {
-          const description = lead.crmDealId ? lead.dealDescription : [
-            'Campanha: ' + campaign.name,
-            'Consultor: ' + consultant.name,
-            'Supervisor: ' + user.name,
-            'Liberado em: ' + assignedAt.toLocaleString('pt-BR', { timeZone: 'America/Cuiaba' }),
-            lead.dealDescription,
-          ].filter(Boolean).join('\n')
-          const delivery = buildCrmDelivery({ ...lead, dealDescription: description }, campaign.nicho, ownerId)
-          return delivery ? { leadId: lead.id, consultantCrmId: ownerId, idempotencyKey: `black-friday:${campaign.id}:lead:${lead.id}`, ...delivery } : null
-        }).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-        if (deliveries.length) await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })
+          const requestId = `black-friday:${campaign.id}:lead:${lead.id}`
+          return {
+            leadId: lead.id, consultantCrmId: ownerId, idempotencyKey: requestId,
+            ...buildCrmRedistribution({ requestId, campaignKey: campaign.nicho, phone: lead.phone, dealId: lead.crmDealId,
+              actorId: user.id, ownerId, pipelineId, stageId, reopenLost: body.reopenLost === true }),
+          }
+        })
+        if (deliveries.length) queuedCount = (await tx.crmDelivery.createMany({ data: deliveries, skipDuplicates: true })).count
       }
       await tx.distributionAudit.create({
         data: {
@@ -167,13 +185,13 @@ export async function POST(req: Request) {
           campaignName: campaign.name,
         },
       })
-      return { consultant, leads, assignedAt }
+      return { consultant, leads, assignedAt, queuedCount }
     })
 
     stage = sendCRM ? "count_crm_queue" : "complete_assignment"
     const crmResult = sendCRM ? {
       configured: !!(process.env.CRM_API_URL?.trim() && process.env.CRM_API_KEY?.trim()),
-      queuedCount: await prisma.crmDelivery.count({ where: { leadId: { in: created.leads.map(lead => lead.id) }, status: { in: ['pending', 'sending'] } } }),
+      queuedCount: created.queuedCount,
       createdCount: 0,
       ignoredCount: 0,
       warnings: [],

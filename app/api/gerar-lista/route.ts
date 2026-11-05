@@ -5,6 +5,7 @@ import { getAuthenticatedUser } from "@/lib/auth"
 import { syncCRMConsultants } from "@/lib/crm-members"
 import { consumeConsultantMonthlyQuota } from "@/lib/consultant-quotas"
 import { buildCrmDelivery, type CrmLead } from "@/lib/crm-delivery-payload"
+import { normalizeCrmPhone } from "@/lib/phone-normalization"
 
 export const runtime = "nodejs"
 
@@ -159,7 +160,7 @@ async function pushLeadsToCRM(
       name: l.name ?? "",
       ...(l.email ? { email: l.email } : {}),
       ...(l.jobTitle ? { jobTitle: l.jobTitle } : {}),
-      ...(l.phone ? { whatsapp: l.phone } : {}),
+      ...(l.phone ? { whatsapp: normalizeCrmPhone(l.phone) } : {}),
       ...(l.city ? { city: l.city } : {}),
       ...(l.state ? { state: l.state } : {}),
       ...(l.company || l.fantasy ? { company: l.company || l.fantasy || undefined } : {}),

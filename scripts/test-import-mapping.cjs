@@ -124,11 +124,11 @@ test("worker envia descrição, trata 429 e não repete pedidos com resultado in
       const delivery = mode === "contacts-bulk"
         ? { method: "CONTACTS_BULK", payload: { contacts: [{ name: "Ana", phone: lead.phone }] } }
         : buildCrmDelivery(mode === "patch" ? { ...lead, crmDealId: "cm-existing" } : lead, "medicos", "crm-ana")
-      const job = { id: 1, leadId: null, listaId: null, ...delivery }
+      const job = { id: 1, leadId: null, listaId: null, idempotencyKey: "list:42:lead:1", ...delivery }
       const tx = { $queryRaw: async () => [{ locked: mode !== "locked" }], crmDelivery: {
         updateMany: async () => ({}),
         findMany: async () => [],
-        findFirst: async () => ++stage === 1 ? mode === "throttled" ? { attemptedAt: new Date() } : null : stage === 2 ? null : job,
+        findFirst: async () => ++stage === 1 ? mode === "throttled" ? { attemptedAt: new Date() } : null : stage === 2 ? job : null,
         update: async () => job,
       } }
       const prisma = { $transaction: fn => fn(tx), crmDelivery: { update: async args => { updates.push(args.data); return {} } } }
@@ -165,11 +165,11 @@ test("worker envia descrição, trata 429 e não repete pedidos com resultado in
 
 test("prévia exige administrador e não grava nem importa contatos", async () => {
   for (const role of [null, "supervisor", "admin"]) {
-    const route = loader({ "@/lib/auth": { getAuthenticatedUser: async () => role ? { role } : null } })("app/api/import/preview/route.ts")
+    const route = loader({ "@/lib/auth": { getAuthenticatedUser: async () => role ? { role, isOwner: role === "admin" } : null } })("app/api/import/preview/route.ts")
     const form = new FormData()
     form.append("file", new File(["Nome,Telefone,UF\nAna,65991234567,MT"], "leads.csv"))
     const response = await route.POST(new Request("http://localhost/api/import/preview", { method: "POST", body: form }))
-    assert.equal(response.status, role === "admin" ? 200 : 401)
+    assert.equal(response.status, role === "admin" ? 200 : 403)
     if (role === "admin") { const data = await response.json(); assert.equal(data.totalRows, 1); assert.equal(data.mapping.Telefone, "phone") }
   }
 })
@@ -181,10 +181,14 @@ test("upload usa exatamente o mapeamento confirmado e preserva descrição no ar
   let written, processed = 0
   const queued = []
   const route = loader({
-    "@/lib/auth": { getAuthenticatedUser: async () => ({ role: "admin" }) },
+    "@/lib/auth": { getAuthenticatedUser: async () => ({ role: "admin", id: "owner", isOwner: true }) },
     "node:fs/promises": { access: async () => {}, mkdir: async () => {}, writeFile: async (_path, buffer) => { written = buffer }, unlink: async () => {} },
-    "@/lib/prisma": { prisma: { crmDelivery: { createMany: async ({ data }) => { queued.push(...data); return { count: data.length } } } } },
-    "@/app/api/criar-lista/route": { POST: async request => {
+    "@/lib/prisma": { prisma: {
+      lead: { findMany: async () => [{ id: 1, phone: lead.phone }] },
+      importBatch: { findUnique: async () => ({ id: 1 }), upsert: async () => ({ id: 1 }) },
+      crmDelivery: { updateMany: async () => ({ count: 0 }), createMany: async ({ data }) => { queued.push(...data); return { count: data.length } } },
+    } },
+    "@/app/api/criar-lista/route": { normalizeImportPhone: load("lib/phone-normalization.ts").normalizeImportPhone, POST: async request => {
       processed++
       const body = await request.json()
       assert.equal(body.skipExisting, true)
@@ -203,6 +207,7 @@ test("upload usa exatamente o mapeamento confirmado e preserva descrição no ar
     form.append("file", new File(["Cliente;Celular;UF;Interesse;Renda;Lixo\nAna;65991234567;MT;Imóvel;8.000;ignorar\nAna 2;65991234567;MT;Imóvel;9.000;ignorar"], "diferente.csv"))
     form.append("columnMapping", JSON.stringify(mapping))
     form.append("nichoFolder", "medicos")
+    form.append("sendToCrm", "true")
     let response = await route.POST(new Request("http://localhost/api/import/upload", { method: "POST", body: form }))
     assert.equal(response.status, 200)
     assert.equal(processed, 1)
@@ -234,6 +239,7 @@ test("gerar lista grava distribuição e fila na mesma transação, sem envio ex
     lead: { findMany: async () => [lead] },
     lista: { create: async () => { events.push("lista"); return { id: 42 } } },
     listaLead: { createMany: async () => { events.push("distribuição") } },
+    distributionAudit: { create: async () => { events.push("auditoria") } },
     crmDelivery: { createMany: async args => { events.push("fila"); queued.push(...args.data); assert.equal(args.skipDuplicates, true) } },
   }
   const prisma = { $transaction: async fn => { events.push("início"); const result = await fn(tx); events.push("commit"); return result }, $queryRaw: async () => [], crmDelivery: { count: async () => 1 } }
@@ -247,7 +253,7 @@ test("gerar lista grava distribuição e fila na mesma transação, sem envio ex
   const body = { consultantCrmId: "crm-ana", consultantName: "Ana", quantidade: 1, estado: "MT", nicho: "medicos", enviarParaCrm: true }
   let response = await route.POST(request(body))
   assert.equal(response.status, 200)
-  assert.deepEqual(events, ["início", "lista", "distribuição", "fila", "commit"])
+  assert.deepEqual(events, ["início", "lista", "distribuição", "fila", "auditoria", "commit"])
   assert.equal(queued[0].listaId, 42)
   assert.equal(queued[0].payload.description, lead.dealDescription)
   assert.equal(queued[0].payload.ownerId, "crm-ana")
@@ -257,10 +263,10 @@ test("gerar lista grava distribuição e fila na mesma transação, sem envio ex
   assert.equal(queued.length, 1)
 })
 
-test("campanha preserva descrição importada e usa a mesma fila e o consultor autorizado", async () => {
+test("campanha usa redistribuição do negócio existente, com etapa e solicitante, após autorização explícita", async () => {
   let queued
   const consultant = { id: "local-ana", crmUserId: "crm-ana", name: "Ana", supervisorId: "supervisor-test" }
-  const tx = { $queryRaw: async () => [], consultant: { findFirst: async () => consultant }, lead: { findMany: async () => [lead] }, blackFridayLead: { createMany: async () => {} }, crmDelivery: { createMany: async args => { queued = args.data } } }
+  const tx = { $queryRaw: async () => [], consultant: { findFirst: async () => consultant }, lead: { findMany: async () => [lead] }, distributionAudit: { create: async () => ({}) }, blackFridayLead: { createMany: async () => {}, findMany: async () => [] }, crmDelivery: { createMany: async args => { queued = args.data; return { count: args.data.length } } } }
   const prisma = { $transaction: fn => fn(tx), blackFridayCampaign: { findFirst: async () => ({ id: 1, name: "Black Friday", nicho: "black-friday-2026" }) }, crmDelivery: { count: async () => 1 } }
   const route = loader({
     "@/lib/prisma": { prisma },
@@ -269,10 +275,21 @@ test("campanha preserva descrição importada e usa a mesma fila e o consultor a
     "@/lib/server-users": { getInitialUsers: () => [] },
     "@/lib/lead-visibility": { canViewGlobalLeadCounts: async () => true },
   })("app/api/black-friday/route.ts")
-  const response = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1, sendToCrm: true }) }))
+  const enabledBefore = process.env.CRM_EXISTING_DEALS_ENABLED
+  process.env.CRM_EXISTING_DEALS_ENABLED = "true"
+  let response
+  try {
+    response = await route.POST(new Request("http://localhost/api/black-friday", { method: "POST", body: JSON.stringify({ consultantId: "local-ana", quantity: 1, sendToCrm: true, pipelineId: "pipeline", stageId: "stage" }) }))
+  } finally {
+    if (enabledBefore === undefined) delete process.env.CRM_EXISTING_DEALS_ENABLED
+    else process.env.CRM_EXISTING_DEALS_ENABLED = enabledBefore
+  }
   assert.equal(response.status, 200)
   assert.equal(queued[0].consultantCrmId, "crm-ana")
-  assert.ok(queued[0].payload.description.includes(lead.dealDescription))
-  assert.ok(queued[0].payload.description.includes("Campanha: Black Friday"))
+  assert.equal(queued[0].method, "REDISTRIBUTE")
+  assert.equal(queued[0].payload.actorId, "test")
+  assert.equal(queued[0].payload.stageId, "stage")
+  assert.equal(queued[0].payload.phone, lead.phone)
+  assert.equal(queued[0].payload.contact, undefined)
   assert.equal((await response.json()).crm.queuedCount, 1)
 })

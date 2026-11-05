@@ -41,7 +41,7 @@ function normalizeBrazilianPrefixes(value: string): string {
   if (digits.startsWith("0") && [13, 14].includes(digits.length)) digits = digits.slice(3)
 
   // Prefixo nacional 0 + DDD.
-  if (digits.startsWith("0") && [11, 12].includes(digits.length)) digits = digits.slice(1)
+  if (digits.startsWith("0") && !digits.startsWith("00")) digits = digits.slice(1)
 
   return digits
 }
@@ -79,10 +79,44 @@ function isValidCpfDigits(digits: string): boolean {
 }
 
 export function normalizeImportPhone(input: unknown): string | null {
-  const normalized = normalizeBrazilianPrefixes(normalizePhone(input))
+  let normalized = normalizeBrazilianPrefixes(normalizePhone(input))
   if (!normalized) return null
   if (normalized.length === 10 && /^[6-9]/.test(normalized.slice(2, 3))) {
-    return `${normalized.slice(0, 2)}9${normalized.slice(2)}`
+    normalized = `${normalized.slice(0, 2)}9${normalized.slice(2)}`
   }
   return isLikelyPhoneDigits(normalized) ? normalized : null
+}
+
+// Corrige o formato no envio inclusive para registros importados antes das
+// regras atuais. Preserva o número informado quando faltam dados: não inventa
+// DDD/dígitos e não remove o WhatsApp do contato.
+export function normalizeCrmPhone(input: unknown): string {
+  const raw = String(input ?? "").trim()
+  const digits = normalizePhone(raw)
+  if (raw.startsWith("+") && !digits.startsWith("55")) return digits ? `+${digits}` : ""
+  return normalizeImportPhone(raw) ?? normalizeBrazilianPrefixes(digits)
+}
+
+/** Campanhas antigas usam o telefone para BUSCAR no CRM, não para criar cadastros. */
+export function normalizeCampaignPhone(input: unknown): string | null {
+  const raw = String(input ?? "").trim()
+  const digits = normalizePhone(raw)
+  if (digits.length < 7 || digits.length > 17 || /^(\d)\1+$/.test(digits)) return null
+  return raw.startsWith("+") && !digits.startsWith("55") ? `+${digits}` : digits
+}
+
+/**
+ * Identidade de um telefone na campanha: formatos diferentes da mesma pessoa
+ * geram a mesma chave. Serve só para comparar, nunca para gravar ou enviar.
+ */
+export function campaignPhoneKey(input: unknown): string | null {
+  const phone = normalizeCampaignPhone(input)
+  if (!phone) return null
+  if (phone.startsWith("+")) return phone
+
+  let digits = normalizeBrazilianPrefixes(phone.startsWith("0055") ? phone.slice(4) : phone)
+  // 55 + DDD + fixo antigo de 7 dígitos. Com 9 no terceiro dígito é um celular do DDD 55.
+  if (digits.length === 11 && digits.startsWith("55") && digits[2] !== "9") digits = digits.slice(2)
+  // DDD + últimos 8 dígitos une celulares com e sem o nono dígito sem misturar DDDs.
+  return digits.length === 10 || digits.length === 11 ? `${digits.slice(0, 2)}${digits.slice(-8)}` : digits
 }

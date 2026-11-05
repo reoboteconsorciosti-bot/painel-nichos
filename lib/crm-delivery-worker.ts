@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
-import { retryDelay } from "@/lib/crm-delivery-payload"
+import { normalizeCrmPayloadPhones, retryDelay } from "@/lib/crm-delivery-payload"
+import { ALREADY_DISTRIBUTED_CODE, crmErrorCode, isLegacyCampaignDelivery, REDISTRIBUTION_METHOD } from "@/lib/crm-redistribution"
 
 // One request per 2.2 seconds globally across replicas. Jobs survive deploys.
 export async function processNextCrmDelivery() {
@@ -21,7 +22,7 @@ export async function processNextCrmDelivery() {
     const paused = await tx.crmDelivery.findFirst({
       where: {
         status: "pending",
-        method: contactsBatch ? "CONTACTS_BULK" : { in: ["POST", "PATCH"] },
+        method: contactsBatch ? "CONTACTS_BULK" : { in: ["POST", "PATCH", REDISTRIBUTION_METHOD] },
         nextAttemptAt: { gt: new Date() },
       },
     })
@@ -29,7 +30,7 @@ export async function processNextCrmDelivery() {
     const requestLimit = contactsBatch ? 10 : 30
     const recentRequests = await tx.crmDelivery.findMany({
       where: {
-        method: contactsBatch ? "CONTACTS_BULK" : { in: ["POST", "PATCH"] },
+        method: contactsBatch ? "CONTACTS_BULK" : { in: ["POST", "PATCH", REDISTRIBUTION_METHOD] },
         attemptedAt: { gte: new Date(Date.now() - 60_000) },
       },
       orderBy: { attemptedAt: "desc" },
@@ -46,14 +47,24 @@ export async function processNextCrmDelivery() {
     return tx.crmDelivery.update({ where: { id: next.id }, data: { status: "sending", attemptedAt: new Date(), error: null } })
   })
   if (!job) return
+  const redistribute = job.method === REDISTRIBUTION_METHOD
+  if (isLegacyCampaignDelivery(job) || (redistribute && process.env.CRM_EXISTING_DEALS_ENABLED !== "true")) {
+    await prisma.crmDelivery.update({ where: { id: job.id }, data: {
+      status: "needs_review",
+      error: "Envio de campanha suspenso: esta ação precisa redistribuir um negócio existente no CRM. Confira a configuração antes de confirmar o envio.",
+    } })
+    if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "error" } })
+    return
+  }
   try {
     const endpoint = job.method === "CONTACTS_BULK"
       ? "/api/v1/contacts/bulk"
+      : redistribute ? "/api/v1/painel-nichos/redistributions"
       : "/api/v1/deals" + (job.method === "PATCH" ? "/" + encodeURIComponent(job.crmDealId!) : "")
     const response = await fetch(`${base}${endpoint}`, {
       method: job.method === "PATCH" ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify(job.payload),
+      body: JSON.stringify(redistribute ? job.payload : normalizeCrmPayloadPhones(job.payload)),
       signal: AbortSignal.timeout(25_000),
     })
     if (response.status === 429) {
@@ -71,12 +82,16 @@ export async function processNextCrmDelivery() {
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "sent", warnings, error: null } })
       return
     }
-    if (response.ok && data?.success === true && typeof data?.data?.id === "string") {
+    if (response.ok && data?.success === true && typeof data?.data?.id === "string" && (!redistribute || (data.data.outcome === "updated" && typeof data.data.contactId === "string" && typeof data.data.auditId === "string"))) {
       await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "sent", crmDealId: data.data.id, warnings: Array.isArray(data.data.warnings) ? data.data.warnings : [], error: null } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: data.data.warnings?.length ? "partial" : "sent" } })
+    } else if (redistribute && crmErrorCode(data) === ALREADY_DISTRIBUTED_CODE) {
+      // A trava do CRM funcionou: nada foi alterado e não há o que revisar nem reenviar.
+      await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: "skipped", error: typeof data?.error === "string" ? data.error : "Este contato já foi redistribuído nesta campanha." } })
+      if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "already_distributed" } })
     } else {
       const target = job.method === "CONTACTS_BULK" ? "os contatos" : "o negócio"
-      await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: response.status >= 500 || response.ok ? "needs_review" : "failed", error: typeof data?.error === "string" ? data.error : `O CRM retornou HTTP ${response.status}. Confira ${target} no CRM antes de reenviar.` } })
+      await prisma.crmDelivery.update({ where: { id: job.id }, data: { status: redistribute || response.status >= 500 || response.ok ? "needs_review" : "failed", error: typeof data?.error === "string" ? data.error : `O CRM retornou HTTP ${response.status}. Confira ${target} no CRM antes de reenviar.` } })
       if (job.listaId === null && job.leadId !== null) await prisma.blackFridayLead.updateMany({ where: { leadId: job.leadId }, data: { crmStatus: "error" } })
     }
   } catch {

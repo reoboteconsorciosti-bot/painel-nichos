@@ -6,7 +6,7 @@ import { NextResponse } from "next/server"
 import * as XLSX from "xlsx"
 import csvParser from "csv-parser"
 import { prisma } from "@/lib/prisma"
-import { isLikelyPhoneDigits, normalizeImportPhone, normalizePhone } from "@/lib/phone-normalization"
+import { isLikelyPhoneDigits, normalizeCampaignPhone, normalizeImportPhone, normalizePhone } from "@/lib/phone-normalization"
 import type { Prisma } from "@prisma/client"
 
 export { normalizeImportPhone } from "@/lib/phone-normalization"
@@ -586,7 +586,9 @@ function normalizeRow(
   const likely = normalizePhone(pickLikelyPhoneValue(row))
   if (likely) phoneCandidates.push(likely)
 
-  const telefone = phoneCandidates
+  const telefone = /black[\s_-]*friday/i.test(nicho)
+    ? normalizeCampaignPhone(p0 || mapped.phone || phoneCandidates[0]) ?? ""
+    : phoneCandidates
     .map((p) => normalizeImportPhone(p))
     .find((p): p is string => !!p) ?? ""
   if (!telefone) {

@@ -1,0 +1,495 @@
+diff --git a/app/api/v1/painel-nichos/redistributions/route.ts b/app/api/v1/painel-nichos/redistributions/route.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..cac5d82653deb2496288ff71ad526135486571fc
+--- /dev/null
++++ b/app/api/v1/painel-nichos/redistributions/route.ts
+@@ -0,0 +1,56 @@
++import { after } from "next/server";
++import { prisma, prismaRaw } from "@/lib/prisma";
++import { runWithTenant, setTenantOnTx } from "@/lib/tenant-context";
++import { requirePanelIntegration } from "@/lib/api/painel-access";
++import { apiSuccess, apiError } from "@/lib/api/v1-response";
++import { firstZodMessage } from "@/lib/api/v1-schemas";
++import { PanelRedistributionError, panelRedistributionSchema, redistributeExistingDeal } from "@/lib/api/painel-redistribution";
++import { rateLimitOrResponse } from "@/lib/rate-limit";
++import { publishDealsEvent } from "@/lib/deals/live-events";
++import { enqueueWebhookEvent, buildDealWebhookPayload } from "@/lib/webhooks/enqueue";
++
++export const dynamic = "force-dynamic";
++
++export async function POST(req: Request) {
++  const auth = await requirePanelIntegration(req);
++  if (!auth.ok) return auth.response;
++  const { access } = auth;
++  const limited = rateLimitOrResponse(`apikey:${access.apiKeyId}:panel-redistribution`, 30, 60_000);
++  if (limited) return limited;
++  const parsed = panelRedistributionSchema.safeParse(await req.json().catch(() => null));
++  if (!parsed.success) return apiError(firstZodMessage(parsed.error), 400);
++
++  return runWithTenant(access.organizationId, async () => {
++    try {
++      const result = await prismaRaw.$transaction(async tx => {
++        await setTenantOnTx(tx, access.organizationId);
++        return redistributeExistingDeal(tx, access.organizationId, access.apiKeyName, parsed.data);
++      }, { isolationLevel: "Serializable", maxWait: 10_000, timeout: 15_000 });
++      if (!result.replayed) {
++        after(async () => {
++          try {
++            await runWithTenant(access.organizationId, async () => {
++              publishDealsEvent(access.organizationId, { type: "deal-updated", pipelineId: result.after.pipelineId });
++              const deal = await prisma.deal.findFirst({ where: { id: result.id, organizationId: access.organizationId }, include: { contact: true, owner: true, stage: true } });
++              if (!deal) return;
++              const payload = await buildDealWebhookPayload(deal);
++              if (result.before.ownerId !== result.after.ownerId) await enqueueWebhookEvent(access.organizationId, "deal.owner_changed", { ...payload, previousOwner: { id: result.before.ownerId } });
++              if (result.before.stageId !== result.after.stageId) await enqueueWebhookEvent(access.organizationId, "deal.stage_changed", { ...payload, previousStage: { id: result.before.stageId } });
++              if (result.before.contactOwnerId !== result.after.contactOwnerId) await enqueueWebhookEvent(access.organizationId, "contact.owner_changed", {
++                id: result.contactId, name: deal.contact.name, previousOwnerId: result.before.contactOwnerId, ownerId: result.after.contactOwnerId,
++              });
++            });
++          } catch (error) { console.error("[panel-redistribution] Notifications failed after commit", error); }
++        });
++      }
++      return apiSuccess(result);
++    } catch (error) {
++      if (error instanceof PanelRedistributionError) return apiError(error.message, error.status, [{ code: error.code }]);
++      if (error && typeof error === "object" && "code" in error && error.code === "P2034") {
++        return apiError("O cadastro mudou durante a redistribuição. Confira o estado atual antes de reenviar.", 409);
++      }
++      console.error("[panel-redistribution] Transaction rolled back", error);
++      return apiError("Não foi possível concluir a redistribuição. Confira a auditoria usando o identificador da solicitação.", 500);
++    }
++  });
++}
+diff --git a/app/api/v1/painel-nichos/stages/route.ts b/app/api/v1/painel-nichos/stages/route.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0b04bd3538f1123d33a5cc22759df482cc435ca
+--- /dev/null
++++ b/app/api/v1/painel-nichos/stages/route.ts
+@@ -0,0 +1,22 @@
++import { prisma } from "@/lib/prisma";
++import { runWithTenant } from "@/lib/tenant-context";
++import { requirePanelIntegration } from "@/lib/api/painel-access";
++import { apiSuccess } from "@/lib/api/v1-response";
++import { rateLimitOrResponse } from "@/lib/rate-limit";
++
++export const dynamic = "force-dynamic";
++
++export async function GET(req: Request) {
++  const auth = await requirePanelIntegration(req);
++  if (!auth.ok) return auth.response;
++  const { access } = auth;
++  const limited = rateLimitOrResponse(`apikey:${access.apiKeyId}:panel-stages`, 60, 60_000);
++  if (limited) return limited;
++  return runWithTenant(access.organizationId, async () => {
++    const pipelines = await prisma.pipeline.findMany({
++      where: { organizationId: access.organizationId }, orderBy: { order: "asc" },
++      select: { id: true, name: true, stages: { orderBy: { order: "asc" }, select: { id: true, name: true } } },
++    });
++    return apiSuccess({ pipelines });
++  });
++}
+diff --git a/docs/painel-nichos-redistribution.md b/docs/painel-nichos-redistribution.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d752ef743650d871aa660f32304ed4daac2a924
+--- /dev/null
++++ b/docs/painel-nichos-redistribution.md
+@@ -0,0 +1,54 @@
++# Redistribuição de negócios existentes — Painel Nichos
++
++Esta operação localiza registros existentes. Não cria contatos nem negócios e não revalida/regrava os telefones originais.
++
++## Ativação
++
++No CRM, configure `PAINEL_NICHOS_REASSIGN_API_KEY_ID` com o **ID**, não o token, de uma chave dedicada do Painel. Ausente ou diferente da chave autenticada: resposta 403, nenhuma redistribuição.
++
++No Painel, configure `CRM_EXISTING_DEALS_ENABLED=true` somente após implantar estes endpoints no CRM. A integração começa desmarcada na interface e exige consultor, funil e etapa. A importação da Black fica apenas no Painel. Reabrir negócios perdidos exige escolha explícita.
++
++Os endpoints usam as tabelas existentes do CRM; esta alteração não requer migração de schema. Não é necessário alterar o endpoint de notas nem o upsert de integrações comuns.
++
++## GET /api/v1/painel-nichos/stages
++
++Autenticação com Bearer da chave dedicada. Retorna `{ success: true, data: { pipelines: [{ id, name, stages: [{ id, name }] }] } }`. Limite de 60/minuto por chave.
++
++## POST /api/v1/painel-nichos/redistributions
++
++Limite de 30/minuto por chave. Solicitação:
++
++```json
++{
++  "requestId": "black-friday:1:lead:123",
++  "campaignKey": "black-friday-2026",
++  "phone": "0624250000",
++  "actorId": "id-do-solicitante-autenticado-no-painel",
++  "ownerId": "id-do-consultor-escolhido",
++  "pipelineId": "id-do-funil-original",
++  "stageId": "id-da-etapa-de-destino",
++  "reopenLost": false
++}
++```
++
++`dealId` é uma restrição opcional quando o ID original já é conhecido. Sem ele, a busca automática deve encontrar exatamente um negócio aberto/perdido do contato no funil selecionado. A etapa pertence a esse mesmo funil; esta versão não transfere negócios entre funis.
++
++O solicitante é conferido novamente no CRM. Deve estar ativo como OWNER, MANAGER ou SUPERVISOR. O destino deve ser MEMBER ativo de Vendas. OWNER tem escopo global; MANAGER e SUPERVISOR respeitam as equipes gerenciadas/lideradas. Fora desse escopo, só permite assumir contato elegível pela regra existente em `evaluateLeadClaim`; demais casos retornam 403 para decisão no CRM.
++
++A busca compara variantes nos quatro campos `phoneNormalized`, `whatsappNormalized`, `phone` e `whatsapp`. Considera formato, DDI 55, zero nacional, operadora e nono dígito de celular. Um fixo antigo como `0624250000` pode corresponder a `55624250000` já salvo; nenhuma dessas variantes é usada para substituir o cadastro. Número com `+` e DDI estrangeiro não recebe variantes brasileiras.
++
++Retorna erro sem alterações se não houver contato, houver vários contatos, não houver negócio elegível ou houver vários negócios. Negócios ganhos não são alterados. Negócios perdidos exigem `reopenLost=true`. Também recusa quando outro negócio aberto/ganho do contato está atribuído a outro responsável ou faltam campos obrigatórios da etapa.
++
++O resultado concluído tem `data.id` (negócio), `contactId`, `outcome: "updated"`, `auditId`, `before`, `after`, `warnings` e `replayed`. Contato, negócio, auditoria e atividade são gravados numa única transação SERIALIZABLE, com RLS configurada e bloqueio das linhas. Nenhum nome, telefone, descrição ou valor é reescrito.
++
++A auditoria `PANEL_DISTRIBUTION_UPDATED` contém antes/depois e usa ID determinístico por organização/campanha/contato. Impede distribuir o mesmo contato duas vezes na campanha por formatos diferentes de telefone. O recibo `PANEL_DISTRIBUTION_RECEIPT` usa ID determinístico por organização/requestId. Repetir a solicitação devolve o resultado anterior, sem nova mutação; reutilizar requestId com dados diferentes retorna 409.
++
++As notificações de mudança e atualização do Kanban acontecem após o commit. Falhar uma notificação não transforma uma transferência concluída em erro HTTP.
++
++## Revisão e implantação
++
++Os testes usam clientes de banco simulados: `node --test scripts/test-panel-redistribution.cjs`. Verifique também `npx prisma generate`, `npx next typegen` e `npx tsc --noEmit --incremental false` no checkout do CRM. Eles não substituem um ensaio em ambiente de homologação com PostgreSQL real e RLS.
++
++Implante primeiro o CRM com a integração ainda desativada no Painel. Depois implante o Painel, confira a configuração e habilite o recurso. Nenhum teste de desenvolvimento deve enviar uma campanha real. A confirmação de envio pertence ao usuário na interface.
++
++As filas antigas que criavam negócios da Black não devem ser reativadas automaticamente. O novo worker do Painel as marca para revisão. A resolução de ambiguidades continua sendo uma decisão no CRM; não existe nesta versão uma escolha arbitrária ou fallback de criação.
+diff --git a/lib/api/painel-access.ts b/lib/api/painel-access.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..813f19b9887d2f2c7d2f72009aa5f6a30414f972
+--- /dev/null
++++ b/lib/api/painel-access.ts
+@@ -0,0 +1,12 @@
++import { requireApiKey } from "@/lib/require-api-key";
++import { apiError } from "@/lib/api/v1-response";
++
++export async function requirePanelIntegration(req: Request) {
++  const access = await requireApiKey(req);
++  if (!access.ok) return { ok: false as const, response: apiError("Chave de API inválida ou revogada", 401) };
++  const allowedKey = process.env.PAINEL_NICHOS_REASSIGN_API_KEY_ID?.trim();
++  if (!allowedKey || access.apiKeyId !== allowedKey) {
++    return { ok: false as const, response: apiError("Esta chave não está habilitada para redistribuir negócios pelo Painel Nichos.", 403) };
++  }
++  return { ok: true as const, access };
++}
+diff --git a/lib/api/painel-phone-match.ts b/lib/api/painel-phone-match.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..643e65de45ae332d574c9b979c9e6598f0c2fbd6
+--- /dev/null
++++ b/lib/api/painel-phone-match.ts
+@@ -0,0 +1,38 @@
++import { VALID_BRAZILIAN_DDDS } from "@/lib/phone-normalize";
++
++/** Variantes servem apenas para BUSCAR registros existentes. Nunca reescrevem um telefone. */
++export function panelPhoneLookupVariants(raw: string): string[] {
++  const text = raw.trim();
++  if (!text || /[a-z]/i.test(text) || !/^\+?[\d\s().-]+$/.test(text)) return [];
++  const digits = text.replace(/\D/g, "");
++  if (digits.length < 7 || digits.length > 17 || /^(\d)\1+$/.test(digits)) return [];
++  if (text.startsWith("+") && !digits.startsWith("55")) return [digits];
++
++  const variants = new Set([digits]);
++  const national = new Set<string>();
++  const addNational = (value: string) => {
++    if (!VALID_BRAZILIAN_DDDS.has(value.slice(0, 2))) return;
++    const localStart = value[2];
++    if ((value.length === 9 && /[2-5]/.test(localStart)) ||
++        (value.length === 10 && /[2-9]/.test(localStart)) ||
++        (value.length === 11 && localStart === "9")) national.add(value);
++  };
++  addNational(digits);
++  if (digits.startsWith("55")) addNational(digits.slice(2));
++  if (digits.startsWith("0055")) addNational(digits.slice(4));
++  if (digits.startsWith("00") && digits.slice(4, 6) === "55") addNational(digits.slice(6));
++  if (digits.startsWith("0") && !digits.startsWith("00")) {
++    addNational(digits.slice(1));
++    if (digits.length === 13 || digits.length === 14) addNational(digits.slice(3));
++  }
++  for (const value of [...national]) {
++    if (value.length === 10 && /[6-9]/.test(value[2])) national.add(value.slice(0, 2) + "9" + value.slice(2));
++    if (value.length === 11 && value[2] === "9" && /[6-9]/.test(value[3])) national.add(value.slice(0, 2) + value.slice(3));
++  }
++  for (const value of national) {
++    variants.add(value);
++    variants.add(`55${value}`);
++    variants.add(`0${value}`);
++  }
++  return [...variants];
++}
+diff --git a/lib/api/painel-redistribution.ts b/lib/api/painel-redistribution.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e622807ab58a996cae5f06e7e12a97def4fb2779
+--- /dev/null
++++ b/lib/api/painel-redistribution.ts
+@@ -0,0 +1,134 @@
++import { createHash } from "node:crypto";
++import { z } from "zod";
++import type { Prisma } from "@/app/generated/prisma/client";
++import { evaluateLeadClaim } from "@/lib/lead-claim";
++import { findMissingRequiredFields, labelForRequiredField } from "@/lib/deal-required-fields";
++import { panelPhoneLookupVariants } from "@/lib/api/painel-phone-match";
++
++export const panelRedistributionSchema = z.object({
++  requestId: z.string().trim().min(1).max(200),
++  campaignKey: z.string().trim().min(1).max(100),
++  phone: z.string().trim().min(7).max(40),
++  actorId: z.string().trim().min(1).max(100),
++  ownerId: z.string().trim().min(1).max(100),
++  pipelineId: z.string().trim().min(1).max(100),
++  stageId: z.string().trim().min(1).max(100),
++  dealId: z.string().trim().min(1).max(100).optional(),
++  reopenLost: z.boolean().default(false),
++});
++
++type Input = z.infer<typeof panelRedistributionSchema>;
++type Snapshot = { ownerId: string; contactOwnerId: string | null; pipelineId: string; stageId: string; status: string };
++type Result = { id: string; contactId: string; outcome: "updated"; auditId: string; before: Snapshot; after: Snapshot; warnings: string[]; replayed: boolean };
++
++export class PanelRedistributionError extends Error {
++  constructor(public code: string, message: string, public status = 409) { super(message); }
++}
++
++function fail(code: string, message: string, status = 409): never { throw new PanelRedistributionError(code, message, status); }
++
++/** Called only inside a SERIALIZABLE transaction after setTenantOnTx. No create/upsert of Contact or Deal. */
++export async function redistributeExistingDeal(tx: Prisma.TransactionClient, organizationId: string, apiKeyName: string, input: Input): Promise<Result> {
++  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
++  const requestHash = hash(JSON.stringify(input));
++  const receiptId = `pn_request_${hash(`${organizationId}:${input.requestId}`)}`;
++  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${organizationId + ":" + input.requestId}, 0)) IS NULL AS ignored`;
++
++  // Authorize on EVERY call, including replays. The API key is an integration
++  // identity; actorId must still be an active manager/supervisor in this tenant.
++  const actor = await tx.organizationUser.findFirst({
++    where: { organizationId, userId: input.actorId, active: true },
++    include: { user: { select: { name: true } } },
++  });
++  if (!actor || !["OWNER", "MANAGER", "SUPERVISOR"].includes(actor.role)) fail("ACTOR_NOT_AUTHORIZED", "O solicitante não tem permissão ativa para redistribuir negócios.", 403);
++  const target = await tx.organizationUser.findFirst({ where: { organizationId, userId: input.ownerId, active: true, role: "MEMBER", area: "VENDAS" } });
++  if (!target) fail("OWNER_NOT_ACTIVE", "O consultor de destino não é um membro ativo de vendas desta organização.", 400);
++
++  const scopeIds = new Set([input.actorId]);
++  if (actor.role !== "OWNER") {
++    const teams = await tx.team.findMany({
++      where: { organizationId, ...(actor.role === "MANAGER" ? { managerId: input.actorId } : { leaderId: input.actorId }) },
++      include: { members: { select: { userId: true } } },
++    });
++    for (const team of teams) {
++      for (const member of team.members) scopeIds.add(member.userId);
++      if (team.leaderId) scopeIds.add(team.leaderId);
++    }
++    if (!scopeIds.has(input.ownerId)) fail("OWNER_OUTSIDE_TEAM", "O consultor de destino não pertence à equipe do solicitante.", 403);
++  }
++
++  const previousAudit = await tx.auditLog.findUnique({ where: { id: receiptId } });
++  if (previousAudit) {
++    const saved = JSON.parse(previousAudit.detail ?? "null") as { requestHash?: string; result?: Result } | null;
++    if (previousAudit.organizationId !== organizationId || previousAudit.action !== "PANEL_DISTRIBUTION_RECEIPT" || saved?.requestHash !== requestHash || !saved.result) {
++      fail("REQUEST_ID_REUSED", "Esta solicitação já foi usada com outros dados. Confira a auditoria antes de reenviar.");
++    }
++    return { ...saved!.result!, replayed: true };
++  }
++
++  const stage = await tx.pipelineStage.findFirst({ where: { id: input.stageId, pipelineId: input.pipelineId, pipeline: { organizationId } } });
++  if (!stage) fail("STAGE_NOT_FOUND", "A etapa de destino não pertence ao funil informado.", 400);
++
++  const variants = panelPhoneLookupVariants(input.phone);
++  if (!variants.length) fail("PHONE_NOT_SEARCHABLE", "Não foi possível interpretar o telefone para localizar o cadastro original.", 400);
++  const matchWhere = { organizationId, OR: [
++    { phoneNormalized: { in: variants } }, { whatsappNormalized: { in: variants } },
++    { phone: { in: variants } }, { whatsapp: { in: variants } },
++  ] };
++  const matches = await tx.contact.findMany({ where: matchWhere, select: { id: true }, take: 2 });
++  if (matches.length === 0) fail("CONTACT_NOT_FOUND", "Nenhum contato correspondente foi encontrado no CRM. O cadastro original precisa ser conferido; nenhum contato novo foi criado.", 404);
++  if (matches.length !== 1) fail("CONTACT_AMBIGUOUS", "Mais de um contato corresponde a esse número. Confira os cadastros no CRM antes de escolher qual redistribuir.");
++
++  const contactId = matches[0].id;
++  await tx.$queryRaw`SELECT id FROM "Contact" WHERE id = ${contactId} AND "organizationId" = ${organizationId} FOR UPDATE`;
++  const contact = await tx.contact.findFirst({ where: { id: contactId, organizationId } });
++  if (!contact) fail("CONTACT_CHANGED", "O contato mudou durante a consulta. Confira o cadastro e tente novamente.");
++  const auditId = `pn_campaign_${hash(`${organizationId}:${input.campaignKey}:${contactId}`)}`;
++  if (await tx.auditLog.findUnique({ where: { id: auditId } })) {
++    fail("CONTACT_ALREADY_DISTRIBUTED", "Este contato já foi redistribuído nesta campanha, possivelmente por outro formato do mesmo telefone. Confira a auditoria antes de transferir novamente.");
++  }
++
++  const deals = await tx.deal.findMany({
++    where: { organizationId, contactId, pipelineId: input.pipelineId, status: { in: ["OPEN", "LOST"] }, ...(input.dealId ? { id: input.dealId } : {}) },
++    select: { id: true }, take: 2,
++  });
++  if (!deals.length) fail("DEAL_NOT_FOUND", "Não foi encontrado um negócio aberto ou perdido deste contato no funil selecionado. Nenhum negócio novo foi criado.", 404);
++  if (deals.length !== 1) fail("DEAL_AMBIGUOUS", "O contato possui vários negócios no funil selecionado. Confira no CRM qual negócio deve ser redistribuído.");
++  await tx.$queryRaw`SELECT id FROM "Deal" WHERE id = ${deals[0].id} AND "organizationId" = ${organizationId} FOR UPDATE`;
++  const deal = await tx.deal.findFirst({ where: { id: deals[0].id, organizationId, contactId, pipelineId: input.pipelineId } });
++  if (!deal || deal.status === "WON") fail("DEAL_CHANGED", "O negócio mudou ou está ganho. Confira o cadastro antes de continuar.");
++  if (deal.status === "LOST" && !input.reopenLost) fail("REOPEN_REQUIRED", "O negócio está perdido. Autorize a reabertura na solicitação para movê-lo para a campanha.");
++
++  if (actor.role !== "OWNER" && (!scopeIds.has(deal.ownerId) || (contact.responsavelId && !scopeIds.has(contact.responsavelId)))) {
++    const claim = await evaluateLeadClaim(organizationId, contactId, contact.responsavelId, tx);
++    if (!claim.claimReason) fail("CURRENT_OWNER_OUTSIDE_TEAM", "Este cadastro pertence a um responsável ativo de outra equipe. A transferência precisa ser autorizada no CRM.", 403);
++  }
++  const otherActiveDeal = await tx.deal.findFirst({ where: { organizationId, contactId, id: { not: deal.id }, status: { in: ["OPEN", "WON"] }, ownerId: { not: input.ownerId } }, select: { id: true } });
++  if (otherActiveDeal) fail("OTHER_ACTIVE_DEAL", "Este contato tem outro negócio aberto ou ganho com outro responsável. Confira a transferência no CRM antes de continuar.");
++
++  const missing = findMissingRequiredFields(stage.requiredFields, { value: deal.value, grossValue: deal.grossValue, creditType: deal.creditType,
++    expectedCloseAt: deal.expectedCloseAt, contactSource: contact.source, contactJobTitle: contact.jobTitle });
++  if (missing.length) fail("STAGE_REQUIRED_FIELDS", `A etapa exige o preenchimento de: ${missing.map(labelForRequiredField).join(", ")}.`, 400);
++
++  const before: Snapshot = { ownerId: deal.ownerId, contactOwnerId: contact.responsavelId, pipelineId: deal.pipelineId, stageId: deal.stageId, status: deal.status };
++  const after: Snapshot = { ownerId: input.ownerId, contactOwnerId: input.ownerId, pipelineId: input.pipelineId, stageId: input.stageId, status: "OPEN" };
++  await tx.deal.update({ where: { id: deal.id }, data: {
++    ownerId: input.ownerId, stageId: input.stageId, status: "OPEN",
++    ...(deal.stageId !== input.stageId || deal.status !== "OPEN" ? { stageEnteredAt: new Date() } : {}),
++  } });
++  await tx.contact.update({ where: { id: contactId }, data: { responsavelId: input.ownerId } });
++  if (deal.ownerId !== input.ownerId) await tx.dealParticipant.deleteMany({ where: { dealId: deal.id, userId: input.ownerId } });
++  const result: Result = { id: deal.id, contactId, outcome: "updated", auditId, before, after, warnings: [], replayed: false };
++  await tx.auditLog.create({ data: { id: auditId, organizationId, actorUserId: input.actorId, actorName: actor.user.name,
++    action: "PANEL_DISTRIBUTION_UPDATED", targetType: "Deal", targetId: deal.id,
++    detail: JSON.stringify({ requestId: input.requestId, campaignKey: input.campaignKey, apiKeyName, result }),
++  } });
++  await tx.auditLog.create({ data: { id: receiptId, organizationId, actorUserId: input.actorId, actorName: actor.user.name,
++    action: "PANEL_DISTRIBUTION_RECEIPT", targetType: "Deal", targetId: deal.id,
++    detail: JSON.stringify({ requestId: input.requestId, requestHash, result }),
++  } });
++  await tx.activity.create({ data: { organizationId, dealId: deal.id, contactId, userId: input.actorId, type: "SYSTEM",
++    body: `Painel Nichos: redistribuiu o negócio e o contato para ${input.ownerId}; etapa ${deal.stageId} → ${input.stageId}; status ${deal.status} → OPEN. Auditoria: ${auditId}.`,
++  } });
++  return result;
++}
+diff --git a/lib/deals/live-events.ts b/lib/deals/live-events.ts
+index 8c27262ef732bf3992b61b311be3e4cf8adbc7c5..18fbca37f572e6b23382831365ceddb07cd7c386 100644
+--- a/lib/deals/live-events.ts
++++ b/lib/deals/live-events.ts
+@@ -28,7 +28,7 @@
+ 
+ import { EventEmitter } from "node:events";
+ 
+-export type DealsLiveEvent = { type: "deal-created"; pipelineId: string };
++export type DealsLiveEvent = { type: "deal-created" | "deal-updated"; pipelineId: string };
+ 
+ // Guardado em globalThis pelo mesmo motivo do client do Prisma em lib/prisma.ts
+ // (e do emitter de WhatsApp acima) — o Next.js pode empacotar este módulo mais
+diff --git a/scripts/test-panel-redistribution.cjs b/scripts/test-panel-redistribution.cjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d35f70e91f35d95b1c66c59cb3cf9fb8cf2a53d
+--- /dev/null
++++ b/scripts/test-panel-redistribution.cjs
+@@ -0,0 +1,124 @@
++const assert = require('node:assert/strict');
++const { test } = require('node:test');
++const fs = require('node:fs');
++const path = require('node:path');
++const ts = require('typescript');
++const root = path.resolve(__dirname, '..');
++function loader() {
++  const cache = new Map();
++  function load(file) {
++    if (cache.has(file)) return cache.get(file).exports;
++    const m = { exports: {} }; cache.set(file, m);
++    const js = ts.transpileModule(fs.readFileSync(path.join(root, file), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
++    new Function('require', 'module', 'exports', js)(name => {
++      if (name === '@/lib/lead-claim') return { evaluateLeadClaim: async () => ({ claimReason: null }) };
++      if (name.startsWith('@/')) return load(name.slice(2) + '.ts');
++      return require(name);
++    }, m, m.exports);
++    return m.exports;
++  }
++  return load;
++}
++const load = loader();
++const { panelPhoneLookupVariants } = load('lib/api/painel-phone-match.ts');
++const { redistributeExistingDeal, panelRedistributionSchema } = load('lib/api/painel-redistribution.ts');
++const input = (extra = {}) => panelRedistributionSchema.parse({ requestId: 'request-1', campaignKey: 'black-friday-2026', phone: '0624250000', actorId: 'actor', ownerId: 'target', pipelineId: 'pipeline', stageId: 'destination', reopenLost: false, ...extra });
++
++function fixture(options = {}) {
++  const state = {
++    contacts: [{ id: 'contact', organizationId: 'org', name: 'Cliente', phone: '55624250000', phoneNormalized: '55624250000', whatsapp: null, whatsappNormalized: null, responsavelId: 'old', source: 'Original', jobTitle: null }],
++    deals: [{ id: 'deal', organizationId: 'org', contactId: 'contact', pipelineId: 'pipeline', stageId: 'old-stage', ownerId: 'old', status: 'OPEN', value: 1200, grossValue: 1500, creditType: 'Imóvel', expectedCloseAt: null, description: 'Histórico original' }],
++    audits: [], activities: [], writes: [],
++  };
++  const actor = { role: options.role || 'OWNER', active: true, user: { name: 'Solicitante' } };
++  const matchContact = (row, where) => row.organizationId === where.organizationId && where.OR.some(condition => Object.entries(condition).some(([key, filter]) => filter.in.includes(row[key])));
++  const tx = {
++    $queryRaw: async () => [],
++    organizationUser: { findFirst: async ({ where }) => where.userId === 'actor' ? (options.noActor ? null : actor) : where.userId === 'target' && !options.noTarget ? { active: true, role: 'MEMBER', area: 'VENDAS' } : null },
++    team: { findMany: async () => [{ leaderId: 'actor', members: options.noTeam ? [] : [{ userId: 'target' }, { userId: 'old' }] }] },
++    pipelineStage: { findFirst: async () => options.noStage ? null : { id: 'destination', requiredFields: options.required || [] } },
++    contact: {
++      findMany: async ({ where, take }) => state.contacts.filter(c => matchContact(c, where)).slice(0, take),
++      findFirst: async ({ where }) => state.contacts.find(c => c.id === where.id && c.organizationId === where.organizationId) || null,
++      update: async ({ where, data }) => { state.writes.push('contact.update'); return Object.assign(state.contacts.find(c => c.id === where.id), data); },
++      create: async () => { throw new Error('Creating a contact is forbidden'); },
++    },
++    deal: {
++      findMany: async ({ where, take }) => state.deals.filter(d => d.organizationId === where.organizationId && d.contactId === where.contactId && d.pipelineId === where.pipelineId && where.status.in.includes(d.status) && (!where.id || d.id === where.id)).slice(0, take),
++      findFirst: async ({ where }) => state.deals.find(d => d.organizationId === where.organizationId && d.contactId === where.contactId &&
++        (typeof where.id === 'string' ? d.id === where.id && d.pipelineId === where.pipelineId : d.id !== where.id.not && where.status.in.includes(d.status) && d.ownerId !== where.ownerId.not)) || null,
++      update: async ({ where, data }) => { state.writes.push('deal.update'); return Object.assign(state.deals.find(d => d.id === where.id), data); },
++      create: async () => { throw new Error('Creating a deal is forbidden'); },
++    },
++    dealParticipant: { deleteMany: async () => { state.writes.push('participant.delete'); return { count: 0 }; } },
++    auditLog: { findUnique: async ({ where }) => state.audits.find(a => a.id === where.id) || null,
++      create: async ({ data }) => { if (options.auditFails) throw new Error('audit unavailable'); state.audits.push(data); return data; } },
++    activity: { create: async ({ data }) => { state.activities.push(data); return data; } },
++  };
++  // Simulates the transaction boundary used by the route, without network or a real database.
++  const run = async (data = input()) => {
++    const snapshot = structuredClone(state);
++    try { return await redistributeExistingDeal(tx, 'org', 'panel-key', data); }
++    catch (error) { for (const key of Object.keys(state)) state[key] = snapshot[key]; throw error; }
++  };
++  return { state, run };
++}
++
++test('legacy trunk and DDI match the same fixed phone without inventing digits', () => {
++  assert.ok(panelPhoneLookupVariants('0624250000').includes('55624250000'));
++  assert.ok(panelPhoneLookupVariants('55624250000').includes('624250000'));
++  assert.ok(!panelPhoneLookupVariants('6233334444').includes('62933334444'));
++  assert.ok(panelPhoneLookupVariants('6294250000').includes('62994250000'));
++  assert.ok(panelPhoneLookupVariants('02162942500000').includes('62942500000'));
++  assert.deepEqual(panelPhoneLookupVariants('+351 968 203 610'), ['351968203610']);
++  assert.deepEqual(panelPhoneLookupVariants('9999999999'), []);
++});
++test('updates the existing deal/contact, preserving original phones, description and values', async () => {
++  const f = fixture(); const result = await f.run();
++  assert.equal(result.id, 'deal'); assert.equal(result.contactId, 'contact');
++  assert.equal(f.state.contacts[0].phone, '55624250000'); assert.equal(f.state.contacts[0].whatsapp, null);
++  assert.equal(f.state.contacts[0].responsavelId, 'target'); assert.equal(f.state.deals[0].ownerId, 'target');
++  assert.equal(f.state.deals[0].stageId, 'destination'); assert.equal(f.state.deals[0].description, 'Histórico original');
++  assert.equal(f.state.deals[0].value, 1200); assert.equal(f.state.deals.length, 1); assert.equal(f.state.contacts.length, 1);
++  assert.equal(result.before.ownerId, 'old'); assert.equal(result.after.ownerId, 'target'); assert.equal(f.state.audits.length, 2);
++});
++test('a retry replays the recorded result without another mutation', async () => {
++  const f = fixture(); const first = await f.run(); const writes = f.state.writes.length;
++  const replay = await f.run(); assert.equal(replay.replayed, true); assert.equal(first.auditId, replay.auditId);
++  assert.equal(f.state.writes.length, writes); assert.equal(f.state.activities.length, 1);
++  await assert.rejects(f.run(input({ stageId: 'different' })), e => e.code === 'REQUEST_ID_REUSED');
++});
++test('same contact/campaign cannot be redistributed by another equivalent-phone row', async () => {
++  const f = fixture(); await f.run(); const writes = f.state.writes.length;
++  await assert.rejects(f.run(input({ requestId: 'request-2', phone: '55624250000' })), e => e.code === 'CONTACT_ALREADY_DISTRIBUTED');
++  assert.equal(f.state.writes.length, writes);
++});
++for (const scenario of ['missing-contact', 'ambiguous-contact', 'ambiguous-deal', 'won', 'lost', 'other-active']) {
++  test(`${scenario} leaves the CRM records unchanged`, async () => {
++    const f = fixture();
++    if (scenario === 'missing-contact') f.state.contacts = [];
++    if (scenario === 'ambiguous-contact') f.state.contacts.push({ ...f.state.contacts[0], id: 'another' });
++    if (scenario === 'ambiguous-deal') f.state.deals.push({ ...f.state.deals[0], id: 'another' });
++    if (scenario === 'won') f.state.deals[0].status = 'WON';
++    if (scenario === 'lost') f.state.deals[0].status = 'LOST';
++    if (scenario === 'other-active') f.state.deals.push({ ...f.state.deals[0], id: 'other-pipeline', pipelineId: 'another-pipeline', status: 'WON' });
++    await assert.rejects(f.run()); assert.deepEqual(f.state.writes, []); assert.deepEqual(f.state.audits, []);
++  });
++}
++test('lost deals reopen only with explicit authorization', async () => {
++  const f = fixture(); f.state.deals[0].status = 'LOST';
++  await f.run(input({ reopenLost: true })); assert.equal(f.state.deals[0].status, 'OPEN');
++});
++for (const options of [{ noActor: true }, { noTarget: true }, { role: 'SUPERVISOR', noTeam: true }, { role: 'MEMBER' }, { noStage: true }, { required: ['expectedCloseAt'] }]) {
++  test(`permissions and stage requirements: ${JSON.stringify(options)}`, async () => {
++    const f = fixture(options); await assert.rejects(f.run()); assert.deepEqual(f.state.writes, []);
++  });
++}
++test('an active owner outside the supervisors team is protected', async () => {
++  const f = fixture({ role: 'SUPERVISOR' }); f.state.deals[0].ownerId = 'another-team'; f.state.contacts[0].responsavelId = 'another-team';
++  await assert.rejects(f.run(), e => e.code === 'CURRENT_OWNER_OUTSIDE_TEAM'); assert.deepEqual(f.state.writes, []);
++});
++test('audit failure aborts the transaction together with both updates', async () => {
++  const f = fixture({ auditFails: true }); await assert.rejects(f.run(), /audit unavailable/);
++  assert.equal(f.state.contacts[0].responsavelId, 'old'); assert.equal(f.state.deals[0].ownerId, 'old'); assert.deepEqual(f.state.activities, []);
++});

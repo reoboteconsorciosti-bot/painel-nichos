@@ -11,6 +11,7 @@ import { createHash } from "node:crypto"
 import { prisma } from "@/lib/prisma"
 import { normalizeImportPhone } from "@/app/api/criar-lista/route"
 import { buildCrmDelivery } from "@/lib/crm-delivery-payload"
+import { normalizeCampaignPhone } from "@/lib/phone-normalization"
 
 export const runtime = "nodejs"
 
@@ -153,6 +154,11 @@ export async function POST(req: Request) {
 
     const form = await req.formData()
     const sendToCrm = String(form.get("sendToCrm") ?? "").toLowerCase() === "true"
+    const campaignImport = /black[\s_-]*friday/i.test(String(form.get("nichoFolder") ?? ""))
+    const importPhone = campaignImport ? normalizeCampaignPhone : normalizeImportPhone
+    if (sendToCrm && campaignImport) {
+      return NextResponse.json({ ok: false, error: "Importe a campanha apenas no Painel. A atualização dos negócios existentes no CRM é solicitada ao liberar os leads para um consultor." }, { status: 400 })
+    }
     const fileEntry = form.get("file")
     if (!(fileEntry instanceof File)) {
       return NextResponse.json({ ok: false, error: "file_required" }, { status: 400 })
@@ -175,14 +181,14 @@ export async function POST(req: Request) {
         const mapping = validateMapping(JSON.parse(String(mappingJson)), parsed.headers, String(form.get("forceState") ?? ""), !isBlackFriday)
         const rows = parsed.rows.map((row, index) => {
           try {
-            const mapped = mapImportRow(row, mapping)
+            const mapped = mapImportRow(row, mapping, { campaign: campaignImport })
             if (!mapped.name) throw new Error("O nome do contato está vazio.")
             if (!isBlackFriday && !mapped.state && !String(form.get("forceState") ?? "").trim()) throw new Error("Informe o estado do contato.")
             return mapped
           } catch (error) { throw new Error(`Linha ${index + parsed.headerRow + 1}: ${error instanceof Error ? error.message : "Dados inválidos."}`) }
         })
         crmImportRows = rows
-        const validPhones = [...new Set(rows.map(row => normalizeImportPhone(row.phone)).filter((phone): phone is string => !!phone))]
+        const validPhones = [...new Set(rows.map(row => importPhone(row.phone)).filter((phone): phone is string => !!phone))]
         for (let index = 0; index < validPhones.length; index += 500) {
           const existing = await prisma.lead.findMany({ where: { phone: { in: validPhones.slice(index, index + 500) } }, select: { phone: true } })
           existing.forEach(lead => { if (lead.phone) existingPhonesBeforeImport.add(lead.phone) })
@@ -280,7 +286,7 @@ export async function POST(req: Request) {
     if (proxiedRes.ok && responseJson && typeof responseJson === "object" && (responseJson as { ok?: unknown }).ok === true && crmImportRows) {
       const contactsByPhone = new Map<string, Record<string, string>>()
       for (const row of crmImportRows) {
-        const phone = normalizeImportPhone(row.phone)
+        const phone = importPhone(row.phone)
         if (phone && row.name && !contactsByPhone.has(phone)) contactsByPhone.set(phone, { ...row, phone })
       }
       const contacts = [...contactsByPhone.values()].map(row => ({

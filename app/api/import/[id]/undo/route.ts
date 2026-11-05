@@ -20,10 +20,12 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       const leads = await tx.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, blackFridayClaim: { select: { id: true } }, crmDeliveries: { select: { id: true }, take: 1 }, listaLeads: { select: { id: true }, take: 1 } } })
       await tx.crmDelivery.deleteMany({ where: { idempotencyKey: { startsWith: `import:${batch.fingerprint}:` }, status: "pending" } })
       if (isBlackFridayBatch) {
-        await tx.crmDelivery.deleteMany({ where: { leadId: { in: leadIds }, idempotencyKey: { startsWith: "black-friday:" }, status: "pending" } })
-        await tx.blackFridayLead.deleteMany({ where: { leadId: { in: leadIds } } })
+        // Desfazer cancela o que ainda não saiu, mas a reserva fica: lead distribuído não volta.
+        const cancelled = await tx.crmDelivery.findMany({ where: { leadId: { in: leadIds }, idempotencyKey: { startsWith: "black-friday:" }, status: "pending" }, select: { id: true, leadId: true } })
+        await tx.crmDelivery.deleteMany({ where: { id: { in: cancelled.map(job => job.id) } } })
+        await tx.blackFridayLead.updateMany({ where: { leadId: { in: cancelled.flatMap(job => job.leadId ?? []) } }, data: { crmStatus: "not_requested" } })
       }
-      const removable = leads.filter(lead => !lead.crmDeliveries.length && !lead.listaLeads.length).map(lead => lead.id)
+      const removable = leads.filter(lead => !lead.blackFridayClaim && !lead.crmDeliveries.length && !lead.listaLeads.length).map(lead => lead.id)
       const deleted = await tx.lead.deleteMany({ where: { id: { in: removable } } })
       const preserved = leads.filter(lead => !removable.includes(lead.id)).map(lead => lead.id)
       if (isBlackFridayBatch && preserved.length) await tx.lead.updateMany({ where: { id: { in: preserved } }, data: { nicho: null } })

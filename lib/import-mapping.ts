@@ -1,4 +1,4 @@
-import { normalizeImportPhone } from "@/lib/phone-normalization"
+import { normalizeCampaignPhone, normalizeImportPhone } from "@/lib/phone-normalization"
 
 export const IMPORT_TARGETS = {
   ignore: "Ignorar",
@@ -58,7 +58,7 @@ export function validateMapping(input: unknown, headers: string[], forceState = 
   return Object.fromEntries(entries) as ColumnMapping
 }
 
-export function mapImportRow(row: Record<string, unknown>, mapping: ColumnMapping): Record<string, string> {
+export function mapImportRow(row: Record<string, unknown>, mapping: ColumnMapping, options: { campaign?: boolean } = {}): Record<string, string> {
   const result: Record<string, string> = {}
   const description: string[] = []
   for (const [header, target] of Object.entries(mapping)) {
@@ -71,7 +71,7 @@ export function mapImportRow(row: Record<string, unknown>, mapping: ColumnMappin
   // Mostra na prévia e envia ao importador o telefone já corrigido quando
   // há um formato brasileiro reconhecível. Números irrecuperáveis seguem
   // para o relatório de linhas inválidas, sem cancelar o lote inteiro.
-  result.phone = normalizeImportPhone(result.phone) ?? result.phone
+  result.phone = (options.campaign ? normalizeCampaignPhone(result.phone) : normalizeImportPhone(result.phone)) ?? result.phone
   if (result.crmDealId && !/^[a-zA-Z0-9._~:-]{1,128}$/.test(result.crmDealId)) throw new Error("ID de negócio inválido na planilha.")
   if (result.crmDealId && result.dealDescription.length > 2000) {
     throw new Error("A nota de um negócio existente aceita até 2.000 caracteres. Reduza as colunas da descrição.")
