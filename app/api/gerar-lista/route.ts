@@ -170,52 +170,51 @@ async function pushLeadsToCRM(
       ...(ownerId ? { ownerId } : {}),
     }))
 
-  // Respeita o limite de 500 por chamada do CRM
-  const CHUNK_SIZE = 500
+  // Lotes pequenos: cada chamada termina rápido e um lote com problema não derruba os demais.
+  const CHUNK_SIZE = 25
+  let endpoint = "/api/v1/painel-nichos/contacts"
   for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
     const chunk = contacts.slice(i, i + CHUNK_SIZE)
+    const label = i / CHUNK_SIZE + 1
     try {
-      const res = await fetch(`${crmUrl}/api/v1/contacts/bulk`, {
+      const send = () => fetch(`${crmUrl}${endpoint}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${crmKey}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${crmKey}` },
         body: JSON.stringify({ contacts: chunk }),
+        signal: AbortSignal.timeout(50_000),
       })
-
+      let res = await send()
+      // CRM ainda sem o endpoint do Painel: usa o envio em lote genérico.
+      if (res.status === 404 && endpoint.includes("painel-nichos")) { endpoint = "/api/v1/contacts/bulk"; res = await send() }
       const data = (await res.json().catch(() => null)) as any
 
       if (!res.ok) {
-        console.error(`[CRM] Erro ao enviar lote ${i / CHUNK_SIZE + 1}:`, res.status, data)
-        // Se houver erro na requisição, todos os leads do chunk são considerados ignorados
+        console.error(`[CRM] Erro ao enviar lote ${label}:`, res.status, data)
         ignoredCount += chunk.length
+        const reason = typeof data?.error === "string" ? data.error : ""
+        allWarnings.push(res.status === 429 ? "O CRM pediu para aguardar (limite de envios por minuto). Tente novamente em instantes."
+          : res.status === 401 || res.status === 403 ? "O CRM não aceitou a chave de integração do Painel. Confira a chave no servidor."
+          : `O CRM recusou o envio (HTTP ${res.status})${reason ? `: ${reason}` : "."}`)
+        continue
+      }
+      console.log(`[CRM] Lote ${label} enviado:`, data?.data?.summary)
+      if (Array.isArray(data?.data?.results)) {
+        for (const r of data.data.results) {
+          // Só "created" conta como lead entregue; contato já existente ou com erro não foi criado.
+          if (r.status === "created") createdCount++
+          else ignoredCount++
+          if (r.status === "error" && typeof r.error === "string") allWarnings.push(r.error)
+          if (Array.isArray(r.warnings)) allWarnings.push(...r.warnings)
+        }
       } else {
         const summary = data?.data?.summary
-        console.log(`[CRM] Lote ${i / CHUNK_SIZE + 1} enviado com sucesso:`, summary)
-        
-        // Coleta warnings dos resultados individuais e contabiliza
-        if (Array.isArray(data?.data?.results)) {
-          data.data.results.forEach((r: any) => {
-            if (r.status === 'created') {
-              createdCount++
-            } else if (r.status === 'ignored') {
-              ignoredCount++
-            }
-            if (Array.isArray(r.warnings)) {
-              allWarnings.push(...r.warnings)
-            }
-          })
-        } else {
-          // Se não houver results, usa o summary se disponível
-          if (summary?.created) createdCount += summary.created
-          if (summary?.ignored) ignoredCount += summary.ignored
-        }
+        if (summary?.created) createdCount += summary.created
+        ignoredCount += Math.max(0, chunk.length - (summary?.created ?? 0))
       }
     } catch (err) {
-      console.error(`[CRM] Falha de rede no lote ${i / CHUNK_SIZE + 1}:`, err)
-      // Se houver erro de rede, todos os leads do chunk são considerados ignorados
+      console.error(`[CRM] Falha de rede no lote ${label}:`, err)
       ignoredCount += chunk.length
+      allWarnings.push("Não foi possível falar com o CRM (sem resposta a tempo). Confira o endereço do CRM configurado no servidor.")
     }
   }
 
