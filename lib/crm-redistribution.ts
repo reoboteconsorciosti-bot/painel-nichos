@@ -16,6 +16,24 @@ export function crmErrorCode(body: unknown): string | null {
   return typeof code === "string" ? code : null
 }
 
+// O CRM decide quem pode receber o lead. Recusa com BLOCKED_* quer dizer: um consultor ativo está com ele (ou o prazo de 3 meses não acabou).
+export const isBlockedCode = (code: string | null) => !!code && code.startsWith("BLOCKED_")
+export const BLOCK_MARK = ":blocked:"
+const DAY_MS = 86_400_000
+// Sem data do CRM (ou data inválida) o lead descansa 30 dias; "null" explícito é definitivo (ex.: já distribuído na campanha).
+export function blockedUntil(retryAfter: unknown, now = Date.now()) {
+  if (retryAfter === null) return new Date(now + 3650 * DAY_MS)
+  const date = typeof retryAfter === "string" ? new Date(retryAfter) : null
+  return date && Number.isFinite(date.getTime()) && date.getTime() > now ? date : new Date(now + 30 * DAY_MS)
+}
+export function crmRetryAfter(body: unknown): unknown {
+  const details = (body as { details?: unknown } | null)?.details
+  const entry = Array.isArray(details) ? (details[0] as Record<string, unknown> | null) : null
+  return entry && "retryAfter" in entry ? entry.retryAfter : undefined
+}
+// A memória de "este lead está bloqueado até quando" fica em linhas de crm_deliveries com esta marca na chave. Não há tabela nova.
+export const blockKey = (leadId: number, at = Date.now()) => `lead:${leadId}${BLOCK_MARK}${at}`
+
 // Um telefone distribuído em qualquer edição não volta, mesmo em outro formato.
 // Leads sem telefone utilizável também ficam de fora: não há como localizá-los no CRM.
 export function pickAvailableCampaignLeads<T extends { phone: string | null }>(candidates: T[], claimedPhones: Array<string | null>, limit = Infinity): T[] {
@@ -31,8 +49,34 @@ export function pickAvailableCampaignLeads<T extends { phone: string | null }>(c
   return picked
 }
 
+// Fila circular: quem nunca foi bloqueado sai primeiro, por ordem. Quem foi bloqueado só volta depois da data liberada pelo CRM, no fim da fila.
+export async function loadLeadBlocks(db: Pick<Prisma.TransactionClient, "crmDelivery">) {
+  const rows = await db.crmDelivery.findMany({ where: { idempotencyKey: { contains: BLOCK_MARK } }, select: { leadId: true, nextAttemptAt: true, createdAt: true } })
+  const blocks = new Map<number, { until: number; checkedAt: number }>()
+  for (const row of rows) {
+    if (row.leadId === null) continue
+    const known = blocks.get(row.leadId)
+    const until = new Date(row.nextAttemptAt).getTime(); const checkedAt = new Date(row.createdAt).getTime()
+    if (!known || checkedAt > known.checkedAt) blocks.set(row.leadId, { until, checkedAt })
+  }
+  return blocks
+}
+
+export function orderCampaignQueue<T extends { id: number }>(candidates: T[], blocks: Map<number, { until: number; checkedAt: number }>, now = Date.now()): T[] {
+  const fresh: T[] = []; const returning: Array<{ lead: T; checkedAt: number }> = []
+  for (const lead of candidates) {
+    const block = blocks.get(lead.id)
+    if (!block) fresh.push(lead)
+    else if (block.until <= now) returning.push({ lead, checkedAt: block.checkedAt })
+  }
+  return [...fresh, ...returning.sort((a, b) => a.checkedAt - b.checkedAt).map(entry => entry.lead)]
+}
+
 export async function findAvailableCampaignLeads(db: Prisma.TransactionClient, nicho: string, limit?: number, actorId?: string) {
-  const refused = actorId ? await db.crmDelivery.findMany({ where: { idempotencyKey: { endsWith: `:refused:${actorId}` } }, select: { leadId: true } }) : []
+  const [refused, blocks] = await Promise.all([
+    actorId ? db.crmDelivery.findMany({ where: { idempotencyKey: { endsWith: `:refused:${actorId}` } }, select: { leadId: true } }) : Promise.resolve([]),
+    loadLeadBlocks(db),
+  ])
   const refusedIds = new Set(refused.map((delivery) => delivery.leadId))
   const [candidates, claims] = await Promise.all([
     db.lead.findMany({
@@ -42,7 +86,7 @@ export async function findAvailableCampaignLeads(db: Prisma.TransactionClient, n
     }),
     db.blackFridayLead.findMany({ select: { lead: { select: { phone: true } } } }),
   ])
-  return pickAvailableCampaignLeads(candidates.filter((lead) => !refusedIds.has(lead.id)), claims.map((claim) => claim.lead.phone), limit)
+  return pickAvailableCampaignLeads(orderCampaignQueue(candidates.filter((lead) => !refusedIds.has(lead.id)), blocks), claims.map((claim) => claim.lead.phone), limit)
 }
 
 // Mesmos limites do CRM: um texto longo da planilha não pode fazer o lead inteiro ser recusado.

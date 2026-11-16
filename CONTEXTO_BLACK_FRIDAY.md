@@ -236,3 +236,7 @@ O projeto também precisa consolidar o processo de implantação: migrações ne
 - Alterações do CRM: `lib/api/painel-redistribution.ts` e `docs/painel-nichos-redistribution.md`, no repositório do CRM.
 
 Este arquivo é um contexto de continuidade. Antes de aplicar alterações em produção, conferir a versão atual dos dois repositórios e o que de fato foi implantado desde esta atualização.
+
+## Atualização: fila circular e regras de elegibilidade (13/11/2026)
+
+O supervisor continua só escolhendo consultor e quantidade. Por baixo, o Painel pergunta ao CRM (`POST /api/v1/painel-nichos/eligibility`, somente leitura, até 200 telefones) quais leads podem ir, reserva só os liberados e continua pela fila até completar a quantidade pedida; a gravação (`/redistributions`) confere as mesmas regras de novo, porque o estado pode mudar entre a pergunta e o envio. As regras vivem numa função só no CRM (`classifyPanelLead`). Lead bloqueado sai da reserva e volta à fila na data informada pelo CRM (`retryAfter`); a memória usa `crm_deliveries` com `:blocked:` na chave, sem migração. Se a pergunta ao CRM falhar, o Painel reserva sem pré-checagem e a gravação continua sendo a palavra final. Negócio perdido nunca é reaberto: o consultor recebe um negócio novo. O limite diário de contatos novos criados passou de 20 para 300. Trechos anteriores sobre reabrir perdidos, entregar perdidos de outras equipes e proteger abertos de outra equipe descrevem o histórico.

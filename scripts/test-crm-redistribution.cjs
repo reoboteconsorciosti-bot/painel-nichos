@@ -16,7 +16,7 @@ function loader(mocks = {}) {
   return load
 }
 const load = loader()
-const { buildCrmRedistribution, defaultCrmDestination, findAvailableCampaignLeads, isLegacyCampaignDelivery, pickAvailableCampaignLeads } = load('lib/crm-redistribution.ts')
+const { buildCrmRedistribution, defaultCrmDestination, findAvailableCampaignLeads, isLegacyCampaignDelivery, pickAvailableCampaignLeads, orderCampaignQueue, blockedUntil } = load('lib/crm-redistribution.ts')
 const { campaignPhoneKey, normalizeCampaignPhone, normalizeImportPhone } = load('lib/phone-normalization.ts')
 test('formats of the same phone share one key and different people do not', () => {
   for (const phone of ['65999990000', '5565999990000', '065999990000', '005565999990000','6599990000', '556599990000', '(65) 99999-0000', '02165999990000']) assert.equal(campaignPhoneKey(phone), '6599990000', phone)
@@ -78,7 +78,7 @@ async function exerciseWorker(job, response, replacement = {}) {
     blackFridayLead: { findUnique: async () => replacement.claim ?? null, findMany: async () => [], create: async args => { replacement.claimed = args.data; return args.data }, deleteMany: async args => { replacement.released = args.where.leadId; return { count: 1 } } },
     lead: { findMany: async () => replacement.candidates ?? [], findUnique: async () => replacement.lead ?? null },
   }
-  const fakePrisma = { $transaction: async cb => cb(tx), crmDelivery: { update: async args => { updates.push(args.data); return job } }, blackFridayLead: { updateMany: async () => ({ count: 1 }) } }
+  const fakePrisma = { ...tx, $transaction: async cb => cb(tx), crmDelivery: { ...tx.crmDelivery, update: async args => { updates.push(args.data); return job } }, blackFridayLead: { ...tx.blackFridayLead, updateMany: async () => ({ count: 1 }) } }
   process.env.CRM_API_URL = 'https://crm.invalid'; process.env.CRM_API_KEY = 'fake-test-key'
   global.fetch = async (url, opts) => { calls.push({ url, opts }); return response }
   try { await loader({ '@/lib/prisma': { prisma: fakePrisma } })('lib/crm-delivery-worker.ts').processNextCrmDelivery(); return { calls, updates } }
@@ -183,4 +183,49 @@ test('a refusal unrelated to the lead still goes to review instead of settling t
 test('no match remains visible for review and never falls back to creating a deal', async () => {
   const result = await exerciseWorker(job, { status: 404, ok: false, json: async () => ({ success: false, error: 'Contato não encontrado' }) })
   assert.equal(result.calls.length, 1); assert.equal(result.updates[0].status, 'needs_review')
+})
+
+// ---- Fila circular: o CRM decide, o lead bloqueado vai para o fim e outro entra no lugar ----
+test('a lead blocked by the CRM leaves the reservation, rests until the CRM date and another one takes its place', async () => {
+  const setup = replacementSetup(); const until = new Date(Date.now() + 30 * 86_400_000).toISOString()
+  const result = await exerciseWorker(replacementJob, { status: 409, ok: false, json: async () => ({ success: false, error: 'Em andamento', details: [{ code: 'BLOCKED_OPEN_ACTIVE', retryAfter: until }] }) }, setup)
+  assert.equal(result.updates[0].status, 'skipped'); assert.equal(setup.claimed.leadId, 9); assert.equal(setup.created.idempotencyKey, 'black-friday:1:lead:9')
+  assert.equal(setup.released, 2); assert.ok(setup.renamed.startsWith('black-friday:1:lead:2:blocked:'))
+})
+test('queue order: never blocked first, expired blocks at the end (oldest check first), active blocks out', () => {
+  const now = Date.now(); const blocks = new Map([[1, { until: now - 10, checkedAt: 200 }], [2, { until: now + 10_000, checkedAt: 300 }], [3, { until: now - 10, checkedAt: 100 }]])
+  assert.deepEqual(orderCampaignQueue([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }], blocks, now).map(lead => lead.id), [4, 5, 3, 1])
+})
+test('blocked until: CRM date when valid, 30 days when missing, never when the CRM says it does not return', () => {
+  const now = Date.now(); const future = new Date(now + 5 * 86_400_000).toISOString()
+  assert.equal(blockedUntil(future, now).toISOString(), future)
+  assert.equal(Math.round((blockedUntil(undefined, now).getTime() - now) / 86_400_000), 30)
+  assert.equal(Math.round((blockedUntil('lixo', now).getTime() - now) / 86_400_000), 30)
+  assert.ok(blockedUntil(null, now).getTime() - now > 3000 * 86_400_000)
+})
+const { pickCheckedLeads } = loader()('lib/crm-eligibility.ts')
+async function pickWith(answerFor, { quantity = 2, down = false } = {}) {
+  const oldFetch = global.fetch; process.env.CRM_API_URL = 'https://crm.invalid'; process.env.CRM_API_KEY = 'fake-test-key'
+  const blocks = []; const calls = []
+  const leads = [1, 2, 3, 4, 5].map(id => ({ id, phone: `1198888000${id}` }))
+  const db = { crmDelivery: { findMany: async () => [], createMany: async args => { blocks.push(...args.data); return { count: args.data.length } } },
+    lead: { findMany: async () => leads }, blackFridayLead: { findMany: async () => [] } }
+  global.fetch = async (url, opts) => { calls.push(JSON.parse(opts.body)); return down ? { ok: false, status: 500, json: async () => null } : { ok: true, status: 200, json: async () => ({ success: true, data: { results: JSON.parse(opts.body).phones.map((phone, index) => ({ index, phone, ...answerFor(phone) })) } }) } }
+  try { return { ...(await pickCheckedLeads(db, 'n', quantity, { campaignKey: 'k', pipelineId: 'p', actorId: 'sup', ownerId: 'crm-ana' })), blocks, calls } } finally { global.fetch = oldFetch }
+}
+test('the exact quantity is delivered: blocked leads are skipped and remembered, the next in line enters', async () => {
+  const blockedPhones = new Set(['11988880001', '11988880003'])
+  const result = await pickWith(phone => blockedPhones.has(phone) ? { free: false, code: 'BLOCKED_OPEN_ACTIVE', reason: 'Em andamento', retryAfter: new Date(Date.now() + 86_400_000).toISOString() } : { free: true, action: 'TRANSFER' })
+  assert.deepEqual(result.leads.map(lead => lead.id), [2, 4]); assert.equal(result.blocked, 2); assert.equal(result.unchecked, false)
+  assert.deepEqual(result.blocks.map(row => row.leadId), [1, 3]); assert.ok(result.blocks.every(row => row.idempotencyKey.includes(':blocked:') && row.method === 'ELIGIBILITY_CHECK' && row.status === 'skipped'))
+  assert.equal(result.calls.length, 1); assert.equal(result.calls[0].pipelineId, 'p')
+})
+test('fewer free leads than requested: delivers what exists and does not loop forever', async () => {
+  const result = await pickWith(phone => phone.endsWith('1') ? { free: true } : { free: false, code: 'CONTACT_ALREADY_DISTRIBUTED', retryAfter: null }, { quantity: 3 })
+  assert.deepEqual(result.leads.map(lead => lead.id), [1]); assert.equal(result.blocked, 4)
+  assert.ok(result.blocks.every(row => new Date(row.nextAttemptAt).getTime() > Date.now() + 3000 * 86_400_000))
+})
+test('without an answer from the CRM the leads are reserved unchecked and the CRM write stays the final word', async () => {
+  const result = await pickWith(() => ({ free: true }), { down: true })
+  assert.deepEqual(result.leads.map(lead => lead.id), [1, 2]); assert.equal(result.unchecked, true); assert.deepEqual(result.blocks, [])
 })

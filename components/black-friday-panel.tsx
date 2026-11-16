@@ -114,7 +114,10 @@ export function BlackFridayPanel() {
                 : result.error ?? "Não foi possível importar os leads."
         throw new Error(friendlyError)
       }
-      setNotice(`${result.leads.length} leads enviados para ${result.consultant.name}. O resultado aparece no histórico abaixo.`)
+      const delivered = result.leads.length
+      setNotice(typeof result.requested === "number" && delivered < result.requested
+        ? `${delivered} de ${result.requested} leads enviados para ${result.consultant.name}. Os demais já estão com outros consultores no CRM ou não há mais leads livres. O resultado aparece no histórico abaixo.`
+        : `${delivered} leads enviados para ${result.consultant.name}. O resultado aparece no histórico abaixo.`)
       setQuantity("")
       await refresh(true)
     } catch (submitError) {

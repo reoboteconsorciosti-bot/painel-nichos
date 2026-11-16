@@ -1,4 +1,5 @@
 import { CAMPAIGN_CLAIM_LOCK_KEY, campaignDelivery, findAvailableCampaignLeads, loadCampaignDestination } from "@/lib/crm-redistribution"
+import { pickCheckedLeads, stillAvailable } from "@/lib/crm-eligibility"
 import { NextResponse } from "next/server"
 import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
@@ -41,7 +42,7 @@ export async function GET(req: Request) {
         include: { consultant: { select: { id: true, name: true } }, lead: true },
       }),
       prisma.crmDelivery.findMany({
-        where: { idempotencyKey: { startsWith: `black-friday:${campaign.id}:lead:` }, NOT: { idempotencyKey: { contains: ":refused:" } }, status: { in: ["failed", "needs_review", "skipped", "sent"] } },
+        where: { idempotencyKey: { startsWith: `black-friday:${campaign.id}:lead:` }, AND: [{ idempotencyKey: { not: { contains: ":refused:" } } }, { idempotencyKey: { not: { contains: ":blocked:" } } }], status: { in: ["failed", "needs_review", "skipped", "sent"] } },
         select: { leadId: true, error: true, warnings: true },
       }),
     ])
@@ -94,65 +95,60 @@ export async function POST(req: Request) {
     if (!destination) return NextResponse.json({ ok: false, error: "crm_unavailable" }, { status: 503 })
 
     stage = "allocate_leads"
-    const created = await prisma.$transaction(async (tx) => {
-      // Serialize campaign allocations with regular list creation so a lead can only be claimed once.
-      await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(${CAMPAIGN_CLAIM_LOCK_KEY}::integer, 1::integer) IS NULL AS locked`)
+    const consultant = await prisma.consultant.findFirst({
+      where: { id: { equals: consultantId, in: allowedConsultants.map((entry) => entry.id) }, ...(user.role === "admin" ? {} : { supervisorId: user.id }) },
+      select: { id: true, name: true, supervisorId: true, crmMemberId: true },
+    })
+    if (!consultant) throw new Error("consultant_outside_team")
+    const ownerId = allowedConsultants.find(entry => entry.id === consultant.id)?.crmUserId
+    if (!ownerId) throw new Error("consultant_crm_id_missing")
 
-      const consultant = await tx.consultant.findFirst({
-        where: { id: { equals: consultantId, in: allowedConsultants.map((entry) => entry.id) }, ...(user.role === "admin" ? {} : { supervisorId: user.id }) },
-        select: { id: true, name: true, supervisorId: true, crmMemberId: true },
-      })
-      if (!consultant) throw new Error("consultant_outside_team")
+    // O supervisor pede uma quantidade; o sistema pergunta ao CRM quais leads podem ir e continua na fila até completar.
+    // Entre perguntar e reservar outro supervisor pode levar um lead, então repete a busca só pelo que faltou.
+    const reserved: Array<Awaited<ReturnType<typeof prisma.lead.findMany>>[number]> = []
+    const assignedAt = new Date()
+    let queuedCount = 0
+    for (let attempt = 0; attempt < 3 && reserved.length < quantity; attempt++) {
+      const picked = await pickCheckedLeads(prisma, campaign.nicho, quantity - reserved.length, { campaignKey: campaign.nicho, pipelineId: destination.pipelineId, actorId: user.id, ownerId })
+      if (picked.leads.length === 0) break
+      const batch = await prisma.$transaction(async (tx) => {
+        // Serialize campaign allocations with regular list creation so a lead can only be claimed once.
+        await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(${CAMPAIGN_CLAIM_LOCK_KEY}::integer, 1::integer) IS NULL AS locked`)
+        const confirmed = await stillAvailable(tx, picked.leads)
+        if (confirmed.length === 0) return null
+        const leads = await tx.lead.findMany({ where: { id: { in: confirmed.map((lead) => lead.id) } }, orderBy: { id: "asc" } })
+        await tx.blackFridayLead.createMany({
+          data: leads.map((lead) => ({
+            campaignId: campaign.id, leadId: lead.id, supervisorId: consultant.supervisorId, consultantId: consultant.id,
+            consultantName: consultant.name, assignedAt, crmStatus: "pending",
+          })),
+        })
+        const { count } = await tx.crmDelivery.createMany({
+          data: leads.map(lead => campaignDelivery(lead, campaign, { actorId: user.id, ownerId, ...destination })),
+          skipDuplicates: true,
+        })
+        return { leads, count }
+      }, { maxWait: 10_000, timeout: 30_000 })
+      if (!batch) continue
+      reserved.push(...batch.leads)
+      queuedCount += batch.count
+    }
+    if (reserved.length === 0) throw new Error("no_leads_available")
 
-      const available = await findAvailableCampaignLeads(tx, campaign.nicho, quantity, user.id)
-      if (available.length === 0) throw new Error("no_leads_available")
-      const leads = await tx.lead.findMany({ where: { id: { in: available.map((lead) => lead.id) } }, orderBy: { id: "asc" } })
-
-      const assignedAt = new Date()
-
-      await tx.blackFridayLead.createMany({
-        data: leads.map((lead) => ({
-          campaignId: campaign.id,
-          leadId: lead.id,
-          supervisorId: consultant.supervisorId,
-          consultantId: consultant.id,
-          consultantName: consultant.name,
-          assignedAt,
-          crmStatus: "pending",
-        })),
-      })
-
-      const ownerId = allowedConsultants.find(entry => entry.id === consultant.id)?.crmUserId
-      if (!ownerId) throw new Error("consultant_crm_id_missing")
-      const { count: queuedCount } = await tx.crmDelivery.createMany({
-        data: leads.map(lead => campaignDelivery(lead, campaign, { actorId: user.id, ownerId, ...destination })),
-        skipDuplicates: true,
-      })
-      await tx.distributionAudit.create({
-        data: {
-          action: "BLACK_FRIDAY",
-          requestedById: user.id,
-          requestedByName: user.name,
-          requestedByEmail: user.email || null,
-          requestedByRole: user.role,
-          consultantId: consultant.id,
-          consultantCrmId: consultant.crmMemberId,
-          consultantName: consultant.name,
-          niche: campaign.nicho,
-          quantity: leads.length,
-          crmRequested: true,
-          campaignId: campaign.id,
-          campaignName: campaign.name,
-        },
-      })
-      return { consultant, leads, assignedAt, queuedCount }
-    }, { maxWait: 10_000, timeout: 30_000 })
+    await prisma.distributionAudit.create({
+      data: {
+        action: "BLACK_FRIDAY", requestedById: user.id, requestedByName: user.name, requestedByEmail: user.email || null, requestedByRole: user.role,
+        consultantId: consultant.id, consultantCrmId: consultant.crmMemberId, consultantName: consultant.name, niche: campaign.nicho,
+        quantity: reserved.length, crmRequested: true, campaignId: campaign.id, campaignName: campaign.name,
+      },
+    }).catch(() => console.error("[BLACK_FRIDAY] Não foi possível gravar a auditoria da distribuição."))
 
     return NextResponse.json({
       ok: true,
-      consultant: created.consultant,
-      leads: created.leads,
-      crm: { queuedCount: created.queuedCount },
+      consultant,
+      leads: reserved,
+      requested: quantity,
+      crm: { queuedCount },
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
