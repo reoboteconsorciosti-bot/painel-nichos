@@ -6,6 +6,8 @@ import { syncCRMConsultants } from "@/lib/crm-members"
 import { consumeConsultantMonthlyQuota } from "@/lib/consultant-quotas"
 import { buildCrmDelivery, type CrmLead } from "@/lib/crm-delivery-payload"
 import { normalizeCrmPhone } from "@/lib/phone-normalization"
+import { loadLeadBlocks, orderCampaignQueue } from "@/lib/crm-redistribution"
+import { pickCheckedFromPool } from "@/lib/crm-eligibility"
 
 export const runtime = "nodejs"
 
@@ -284,7 +286,36 @@ export async function POST(req: Request) {
   if (selectedConsultantIndex < 0) return NextResponse.json({ ok: false, error: "consultant_outside_team" }, { status: 403 })
   const consultorId = selectedConsultantIndex + 1
 
+  const baseWhere = {
+    ...buildNichoWhere(nicho),
+    state: { equals: estado, mode: "insensitive" as const },
+    ...(cidade
+      ? {
+        city: { equals: cidade, mode: "insensitive" as const },
+      }
+      : {}),
+  }
+
   try {
+    // Envio ao CRM: a quantidade pedida é a que chega. O CRM diz quais leads aceita; os que ele recusa
+    // (já existem, estão com consultor ativo etc.) vão para o fim da fila e o próximo da fila entra no lugar.
+    let checkedIds: number[] | null = null
+    if (enviarParaCrm) {
+      const blocks = await loadLeadBlocks(prisma)
+      const now = Date.now()
+      const activeBlocked = [...blocks.entries()].filter(([, block]) => block.until > now).map(([id]) => id)
+      const candidates = await prisma.lead.findMany({
+        where: { ...baseWhere, listaLeads: { none: {} }, blackFridayClaim: { is: null }, ...(activeBlocked.length ? { id: { notIn: activeBlocked } } : {}) },
+        orderBy: { id: "asc" },
+        select: { id: true, phone: true },
+        take: 3000,
+      })
+      const pool = orderCampaignQueue(candidates.filter(lead => (lead.phone ?? "").replace(/\D/g, "").length >= 8), blocks, now)
+      // A lista só cria contatos novos no CRM: só serve quem o CRM não tem ("NEW").
+      const picked = await pickCheckedFromPool(prisma, pool, quantidade, { campaignKey: `lista:${nicho}`, pipelineId: "lista", ownerId: consultantCrmId }, answer => answer.action === "NEW")
+      checkedIds = picked.leads.map(lead => lead.id)
+    }
+
     const result = await prisma.$transaction(async (tx: PrismaType.TransactionClient) => {
       // Serialize regular extraction with campaign allocations to avoid double claims.
       await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1) IS NULL AS locked`)
@@ -292,19 +323,11 @@ export async function POST(req: Request) {
 
       // Opção B (sem coluna nicho em leads): não filtra no banco.
       // Seleciona leads que ainda não foram atribuídos a nenhuma lista.
-      const baseWhere = {
-        ...buildNichoWhere(nicho),
-        state: { equals: estado, mode: "insensitive" as const },
-        ...(cidade
-          ? {
-            city: { equals: cidade, mode: "insensitive" as const },
-          }
-          : {}),
-      }
-
+      // Com checagem do CRM, confirma sob a trava que os escolhidos continuam livres.
       const leads = await tx.lead.findMany({
         where: {
           ...baseWhere,
+          ...(checkedIds ? { id: { in: checkedIds } } : {}),
           listaLeads: { none: {} },
           blackFridayClaim: { is: null },
         },
@@ -415,7 +438,7 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true, ...result, crmWarnings, crmCreatedCount, crmIgnoredCount, crmQueuedCount })
+    return NextResponse.json({ ok: true, ...result, requested: quantidade, crmWarnings, crmCreatedCount, crmIgnoredCount, crmQueuedCount })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
 

@@ -8,7 +8,7 @@ const MAX_SCAN = 3000
 const DEADLINE_MS = 40_000
 const CHECK_METHOD = "ELIGIBILITY_CHECK"
 
-type Answer = { index: number; free: boolean; code?: string; reason?: string; retryAfter?: string | null }
+export type Answer = { index: number; free: boolean; action?: string; code?: string; reason?: string; retryAfter?: string | null }
 type Candidate = { id: number; phone: string | null }
 
 export async function askCrmEligibility(phones: string[], campaignKey: string, pipelineId: string): Promise<Answer[] | null> {
@@ -39,8 +39,22 @@ export async function pickCheckedLeads(
   quantity: number,
   ctx: { campaignKey: string; pipelineId: string; actorId: string; ownerId: string },
 ) {
-  const deadline = Date.now() + DEADLINE_MS
   const pool: Candidate[] = await findAvailableCampaignLeads(db, nicho, MAX_SCAN, ctx.actorId)
+  return pickCheckedFromPool(db, pool, quantity, ctx)
+}
+
+/**
+ * Mesma fila e mesma checagem para a lista de nicho: pool já ordenado (quem nunca foi bloqueado primeiro).
+ * `accept` diz quais respostas "livre" servem para quem pediu (a lista só cria contatos novos, então só aceita "NEW").
+ */
+export async function pickCheckedFromPool(
+  db: Prisma.TransactionClient,
+  pool: Candidate[],
+  quantity: number,
+  ctx: { campaignKey: string; pipelineId: string; ownerId: string },
+  accept: (answer: Answer) => boolean = () => true,
+) {
+  const deadline = Date.now() + DEADLINE_MS
   const picked: Candidate[] = []
   let cursor = 0; let blocked = 0; let unchecked = false
   while (picked.length < quantity && cursor < pool.length) {
@@ -58,7 +72,9 @@ export async function pickCheckedLeads(
     const rows: Prisma.CrmDeliveryCreateManyInput[] = []
     slice.forEach((lead, position) => {
       const answer = answers.find(entry => entry.index === position)
-      if (answer?.free) { if (picked.length < quantity) picked.push(lead); return }
+      if (answer?.free) { if (picked.length < quantity && accept(answer)) picked.push(lead); return }
+      // Telefone que não dá para buscar não é bloqueio do CRM: não entra na memória de bloqueios.
+      if (answer?.code === "PHONE_NOT_SEARCHABLE") return
       blocked++
       rows.push({
         leadId: lead.id, consultantCrmId: ctx.ownerId, method: CHECK_METHOD, status: "skipped", error: answer?.reason ?? "O CRM não liberou este lead.",

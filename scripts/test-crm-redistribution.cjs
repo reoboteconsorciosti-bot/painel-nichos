@@ -229,3 +229,17 @@ test('without an answer from the CRM the leads are reserved unchecked and the CR
   const result = await pickWith(() => ({ free: true }), { down: true })
   assert.deepEqual(result.leads.map(lead => lead.id), [1, 2]); assert.equal(result.unchecked, true); assert.deepEqual(result.blocks, [])
 })
+const { pickCheckedFromPool } = loader()('lib/crm-eligibility.ts')
+test('list: only leads the CRM does not have are accepted; existing and blocked are skipped until the quantity is reached', async () => {
+  const oldFetch = global.fetch; process.env.CRM_API_URL = 'https://crm.invalid'; process.env.CRM_API_KEY = 'fake-test-key'
+  const blocks = []; const asked = []
+  const pool = [1, 2, 3, 4, 5, 6].map(id => ({ id, phone: `1198888000${id}` }))
+  const db = { crmDelivery: { createMany: async args => { blocks.push(...args.data); return { count: args.data.length } } } }
+  const answers = { 1: { free: false, code: 'BLOCKED_OPEN_ACTIVE', retryAfter: null }, 2: { free: true, action: 'TRANSFER' }, 3: { free: true, action: 'NEW' }, 4: { free: false, code: 'PHONE_NOT_SEARCHABLE', retryAfter: null }, 5: { free: true, action: 'NEW' }, 6: { free: true, action: 'NEW' } }
+  global.fetch = async (url, opts) => { const phones = JSON.parse(opts.body).phones; asked.push(phones.length); return { ok: true, status: 200, json: async () => ({ success: true, data: { results: phones.map((phone, index) => ({ index, phone, ...answers[Number(phone.slice(-1))] })) } }) } }
+  try {
+    const result = await pickCheckedFromPool(db, pool, 2, { campaignKey: 'lista:n', pipelineId: 'lista', ownerId: 'crm-ana' }, answer => answer.action === 'NEW')
+    assert.deepEqual(result.leads.map(lead => lead.id), [3, 5])
+    assert.deepEqual(blocks.map(row => row.leadId), [1])
+  } finally { global.fetch = oldFetch }
+})
