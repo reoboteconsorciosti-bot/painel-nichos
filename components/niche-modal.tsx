@@ -117,10 +117,10 @@ export function NicheModal({ isOpen, onClose, activeNicheId, onGenerate, onCheck
                             {exceedsAvailable && <p role="alert" className="text-xs text-destructive">{availability?.available === 0 ? "Sem contatos disponíveis. Escolha outra região." : `Escolha até ${availability?.available} contatos ou altere a região.`}</p>}
                         </section>
                         <section className="space-y-2">
-                            <label htmlFor="list-consultant" className="text-sm font-semibold">3. Para qual consultor?</label>
+                            <label htmlFor="list-consultant" className="text-sm font-semibold">3. Para quem?</label>
                             <Select value={consultantId} onValueChange={value => { setConsultantId(value); setError(null) }} disabled={submitting}>
-                                <SelectTrigger id="list-consultant" className="h-10 w-full min-w-0 bg-background"><SelectValue placeholder="Selecione o consultor" /></SelectTrigger>
-                                <SelectContent>{consultants.filter(c => c.crmUserId).map(c => <SelectItem key={c.crmUserId} value={c.crmUserId!}>{c.name}</SelectItem>)}</SelectContent>
+                                <SelectTrigger id="list-consultant" className="h-10 w-full min-w-0 bg-background"><SelectValue placeholder="Selecione quem vai receber" /></SelectTrigger>
+                                <SelectContent>{[...consultants].filter(c => c.crmUserId).sort((a, b) => Number(!!b.isSelf) - Number(!!a.isSelf)).map(c => <SelectItem key={c.crmUserId} value={c.crmUserId!}>{c.isSelf ? `${c.name} (para mim)` : c.name}</SelectItem>)}</SelectContent>
                             </Select>
                             {consultants.filter(c => c.crmUserId).length === 0 && <p className="text-xs text-muted-foreground">Nenhum consultor disponível na equipe.</p>}
                         </section>

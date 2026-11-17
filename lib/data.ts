@@ -207,6 +207,7 @@ export interface Consultant {
   name: string
   supervisorId: string // Vincula o consultor ao ID do supervisor
   crmUserId?: string
+  isSelf?: boolean // o próprio supervisor/gerente, que tira lista para si
 }
 
 // As contas e senhas agora são importadas pelo lado do servidor em lib/server-users.ts

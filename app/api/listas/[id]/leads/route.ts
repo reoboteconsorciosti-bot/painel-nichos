@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { getAuthenticatedUser } from "@/lib/auth"
-import { syncCRMConsultants } from "@/lib/crm-members"
+import { syncListRecipients } from "@/lib/crm-members"
 
 export const runtime = "nodejs"
 
@@ -22,7 +22,7 @@ export async function GET(
     if (user.role !== "admin") {
       const lista = await prisma.lista.findUnique({ where: { id: listaId }, select: { crmConsultantId: true } })
       if (!lista?.crmConsultantId) return NextResponse.json({ ok: false, error: "lista_outside_team" }, { status: 403 })
-      const teamConsultants = await syncCRMConsultants(user)
+      const teamConsultants = await syncListRecipients(user)
       if (!teamConsultants.some((consultant) => consultant.crmUserId === lista.crmConsultantId)) {
         return NextResponse.json({ ok: false, error: "lista_outside_team" }, { status: 403 })
       }

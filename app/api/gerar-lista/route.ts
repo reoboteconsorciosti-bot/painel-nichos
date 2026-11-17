@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { Prisma, type Prisma as PrismaType } from "@prisma/client"
 import { getAuthenticatedUser } from "@/lib/auth"
-import { syncCRMConsultants } from "@/lib/crm-members"
+import { syncListRecipients } from "@/lib/crm-members"
 import { consumeConsultantMonthlyQuota } from "@/lib/consultant-quotas"
 import { buildCrmDelivery, type CrmLead } from "@/lib/crm-delivery-payload"
 import { normalizeCrmPhone } from "@/lib/phone-normalization"
@@ -275,7 +275,7 @@ export async function POST(req: Request) {
     )
   }
 
-  const currentConsultants = await syncCRMConsultants(user).catch(() => null)
+  const currentConsultants = await syncListRecipients(user).catch(() => null)
   if (!currentConsultants) return NextResponse.json({ ok: false, error: "crm_members_unavailable" }, { status: 502 })
   const selectedConsultantIndex = currentConsultants.findIndex((consultant) =>
     consultant.crmUserId === consultantCrmId &&
@@ -283,7 +283,8 @@ export async function POST(req: Request) {
     (user.role === "admin" || consultant.supervisorId === user.id),
   )
   if (selectedConsultantIndex < 0) return NextResponse.json({ ok: false, error: "consultant_outside_team" }, { status: 403 })
-  const consultorId = selectedConsultantIndex + 1
+  // Posição histórica só para quem é da equipe. Supervisor e gerente (para si) ficam com 0, sem herdar uso de outra pessoa.
+  const consultorId = currentConsultants[selectedConsultantIndex]!.isSelf ? 0 : selectedConsultantIndex + 1
 
   const baseWhere = {
     ...buildNichoWhere(nicho),

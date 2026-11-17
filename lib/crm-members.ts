@@ -77,8 +77,29 @@ export async function getCRMMembers(): Promise<CRMMember[]> {
 
   return payload.data.members.map(parseMember).filter((member): member is CRMMember => member !== null)
 }
-export async function syncCRMConsultants(user: { id: string; role: "admin" | "supervisor"; teamId?: string }) {
-  const members = await getCRMMembers()
+type SyncUser = { id: string; role: "admin" | "supervisor"; teamId?: string }
+
+async function upsertConsultantRow(member: CRMMember, supervisorId: string) {
+  let existing = await prisma.consultant.findUnique({ where: { crmMemberId: member.id } })
+  if (!existing) {
+    existing = await prisma.consultant.findFirst({
+      where: { supervisorId, crmMemberId: null, name: { equals: member.name, mode: "insensitive" } },
+    })
+  }
+  return existing
+    ? prisma.consultant.update({
+      where: { id: existing.id },
+      data: { name: member.name, supervisorId, crmMemberId: member.id },
+      select: { id: true, name: true, supervisorId: true },
+    })
+    : prisma.consultant.create({
+      data: { name: member.name, supervisorId, crmMemberId: member.id },
+      select: { id: true, name: true, supervisorId: true },
+    })
+}
+
+export async function syncCRMConsultants(user: SyncUser, preloaded?: CRMMember[]) {
+  const members = preloaded ?? await getCRMMembers()
   const consultants = members.filter((member) =>
     member.active && member.area === "SALES" && member.role === "MEMBER" &&
     member.team && member.teamId === member.team.id && member.team.leaderId &&
@@ -92,28 +113,35 @@ export async function syncCRMConsultants(user: { id: string; role: "admin" | "su
     const supervisor = members.find((candidate) => candidate.id === supervisorId)
     const teamName = member.team?.name ?? "Equipe sem nome"
     const supervisorName = supervisor?.name ?? "Supervisor não identificado"
-    let existing = await prisma.consultant.findUnique({ where: { crmMemberId: member.id } })
-    if (!existing) {
-      existing = await prisma.consultant.findFirst({
-        where: { supervisorId, crmMemberId: null, name: { equals: member.name, mode: "insensitive" } },
-      })
-    }
-
-    const consultant = existing
-      ? await prisma.consultant.update({
-        where: { id: existing.id },
-        data: { name: member.name, supervisorId, crmMemberId: member.id },
-        select: { id: true, name: true, supervisorId: true },
-      })
-      : await prisma.consultant.create({
-        data: { name: member.name, supervisorId, crmMemberId: member.id },
-        select: { id: true, name: true, supervisorId: true },
-      })
+    const consultant = await upsertConsultantRow(member, supervisorId)
 
     if (!seen.has(consultant.id)) {
       seen.add(consultant.id)
-      synced.push({ ...consultant, crmUserId: member.id, photoUrl: member.photoUrl, teamId: member.teamId, teamName, supervisorName })
+      synced.push({ ...consultant, crmUserId: member.id, photoUrl: member.photoUrl, teamId: member.teamId, teamName, supervisorName, isSelf: false })
     }
   }
   return synced
+}
+
+// Supervisores e gerentes ativos de vendas: podem tirar lista para si mesmos, dentro do limite que o dono define.
+export const LEADERSHIP_GROUP = "Supervisores e gerentes"
+const isLeadership = (member: CRMMember) => member.active && member.area === "SALES" && (member.role === "SUPERVISOR" || member.role === "MANAGER")
+export const leadershipLabel = (member: CRMMember) => member.role === "MANAGER" ? "Gerente" : "Supervisor"
+
+export async function getLeadershipMembers() {
+  return (await getCRMMembers()).filter(isLeadership).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+}
+
+/**
+ * Quem pode receber a lista de quem está logado: os consultores da equipe e, para supervisor e gerente,
+ * ele mesmo. A própria pessoa vem por último e marcada (isSelf). O dono continua vendo só os consultores.
+ */
+export async function syncListRecipients(user: SyncUser) {
+  const members = await getCRMMembers()
+  const consultants = await syncCRMConsultants(user, members)
+  if (user.role === "admin") return consultants
+  const self = members.find(member => member.id === user.id)
+  if (!self || !isLeadership(self)) return consultants
+  const row = await upsertConsultantRow(self, self.id)
+  return [...consultants, { ...row, crmUserId: self.id, photoUrl: self.photoUrl, teamId: self.teamId, teamName: self.team?.name ?? LEADERSHIP_GROUP, supervisorName: self.name, isSelf: true }]
 }

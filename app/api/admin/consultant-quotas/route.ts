@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { Prisma } from "@prisma/client"
 import { getAuthenticatedUser } from "@/lib/auth"
-import { syncCRMConsultants } from "@/lib/crm-members"
+import { getLeadershipMembers, LEADERSHIP_GROUP, leadershipLabel, syncCRMConsultants } from "@/lib/crm-members"
 import { ensureMonthlyUsage, getCurrentMonthStart, getMonthlyQuotaRows } from "@/lib/consultant-quotas"
 import { getSupervisorCountVisibility, setSupervisorCountVisibility } from "@/lib/lead-visibility"
 import { prisma } from "@/lib/prisma"
@@ -20,8 +20,10 @@ export async function GET(req: Request) {
 
   try {
     const consultants = await syncCRMConsultants(user)
-    const ids = consultants.map((consultant) => consultant.crmUserId)
-    const legacyIndexes = new Map(ids.map((id, index) => [id, index + 1]))
+    const leaders = await getLeadershipMembers()
+    const ids = [...consultants.map((consultant) => consultant.crmUserId), ...leaders.map((leader) => leader.id)]
+    // Supervisores e gerentes não têm posição histórica: o uso deles conta só a partir do próprio registro.
+    const legacyIndexes = new Map(consultants.map((consultant, index) => [consultant.crmUserId, index + 1]))
     const usageById = await getMonthlyQuotaRows(ids, legacyIndexes)
     const supervisorsCanSeeCounts = await getSupervisorCountVisibility()
 
@@ -38,7 +40,16 @@ export async function GET(req: Request) {
         teamId: consultant.teamId,
         teamName: consultant.teamName,
         ...(usageById.get(consultant.crmUserId) ?? { used: 0, monthlyLimit: 300 }),
-      })),
+      })).concat(leaders.map((leader) => ({
+        crmUserId: leader.id,
+        name: leader.name,
+        photoUrl: leader.photoUrl,
+        supervisorId: leader.id,
+        supervisorName: leadershipLabel(leader),
+        teamId: leader.teamId,
+        teamName: LEADERSHIP_GROUP,
+        ...(usageById.get(leader.id) ?? { used: 0, monthlyLimit: 300 }),
+      }))),
     })
   } catch (error) {
     console.error("[CONSULTANT_QUOTAS] Failed to load", error instanceof Error ? error.message : "unknown")
@@ -101,7 +112,9 @@ export async function PATCH(req: Request) {
   try {
     const consultants = await syncCRMConsultants(user)
     const consultantIndex = consultants.findIndex((consultant) => consultant.crmUserId === crmUserId)
-    if (consultantIndex < 0) return NextResponse.json({ ok: false, error: "consultant_not_found" }, { status: 404 })
+    // Supervisor ou gerente: índice histórico 0 (sem herdar uso de ninguém).
+    const isLeader = consultantIndex < 0 && (await getLeadershipMembers()).some((leader) => leader.id === crmUserId)
+    if (consultantIndex < 0 && !isLeader) return NextResponse.json({ ok: false, error: "consultant_not_found" }, { status: 404 })
 
     const result = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`SELECT pg_advisory_xact_lock(1330008644, 1) IS NULL AS locked`)
@@ -112,7 +125,7 @@ export async function PATCH(req: Request) {
           update: { monthlyLimit },
         })
       }
-      let usage = await ensureMonthlyUsage(tx, crmUserId, consultantIndex + 1, getCurrentMonthStart())
+      let usage = await ensureMonthlyUsage(tx, crmUserId, isLeader ? 0 : consultantIndex + 1, getCurrentMonthStart())
       if (resetUsage) {
         usage = await tx.consultantMonthlyUsage.update({ where: { id: usage.id }, data: { used: 0 } })
       }

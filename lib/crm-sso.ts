@@ -79,6 +79,9 @@ export async function establishCRMSSOSession(token: string): Promise<{ user: { i
   let role: "admin" | "supervisor"
   if (member.role === "SUPERVISOR" && member.team?.leaderId === member.id && member.teamId === member.team.id) {
     role = "supervisor"
+  } else if (member.role === "MANAGER") {
+    // Gerente não lidera equipe no Painel: entra como supervisor sem consultores e tira lista só para si.
+    role = "supervisor"
   } else if (member.role === "OWNER") {
     role = "admin"
   } else {

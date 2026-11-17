@@ -61,12 +61,13 @@ export default function Page() {
         const parsed: Consultant[] = rows
           .filter((r) => r && typeof r === "object")
           .map((r) => {
-            const o = r as { id?: unknown; name?: unknown; supervisorId?: unknown; crmUserId?: unknown }
+            const o = r as { id?: unknown; name?: unknown; supervisorId?: unknown; crmUserId?: unknown; isSelf?: unknown }
             return {
               id: String(o.id ?? ""),
               name: String(o.name ?? ""),
               supervisorId: String(o.supervisorId ?? ""),
               crmUserId: String(o.crmUserId ?? ""),
+              isSelf: o.isSelf === true,
             }
           })
           .filter((c) => !!c.id && !!c.name && !!c.supervisorId)

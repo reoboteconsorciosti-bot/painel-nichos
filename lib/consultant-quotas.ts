@@ -29,7 +29,7 @@ export async function ensureMonthlyUsage(
   })
   if (existing) return existing
 
-  const legacyUsed = await getLegacyMonthlyUsage(db, legacyConsultantIndex, monthStart)
+  const legacyUsed = legacyConsultantIndex > 0 ? await getLegacyMonthlyUsage(db, legacyConsultantIndex, monthStart) : 0
   return db.consultantMonthlyUsage.create({
     data: { crmUserId, monthStart, used: legacyUsed },
   })
@@ -81,7 +81,7 @@ export async function getMonthlyQuotaRows(crmUserIds: string[], legacyIndexes: M
   return new Map(crmUserIds.map((crmUserId) => {
     const legacyIndex = legacyIndexes.get(crmUserId) ?? 0
     return [crmUserId, {
-      used: usageById.get(crmUserId) ?? legacyUsageByIndex.get(legacyIndex) ?? 0,
+      used: usageById.get(crmUserId) ?? (legacyIndex > 0 ? legacyUsageByIndex.get(legacyIndex) : undefined) ?? 0,
       monthlyLimit: quotaById.get(crmUserId) ?? 300,
     }]
   }))
