@@ -6,7 +6,7 @@ export type CRMMember = {
   email: string
   photoUrl: string | null
   role: "OWNER" | "MANAGER" | "SUPERVISOR" | "MEMBER"
-  area: "SALES" | "ADMINISTRATIVE"
+  area: "SALES" | "ADMINISTRATIVE" | "OTHER"
   active: boolean
   teamId: string | null
   team: { id: string; name: string; leaderId: string | null } | null
@@ -17,7 +17,8 @@ function normalizeArea(value: unknown): CRMMember["area"] | null {
   const normalized = value.trim().toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
   if (normalized === "SALES" || normalized === "VENDAS") return "SALES"
   if (["ADMINISTRATIVE", "ADMINISTRATIVO", "ADMINISTRATIVA"].includes(normalized)) return "ADMINISTRATIVE"
-  return null
+  // Financeiro, pós-contemplação etc.: o membro continua na lista (supervisores e gerentes podem ter outra área).
+  return normalized ? "OTHER" : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -123,9 +124,9 @@ export async function syncCRMConsultants(user: SyncUser, preloaded?: CRMMember[]
   return synced
 }
 
-// Supervisores e gerentes ativos de vendas: podem tirar lista para si mesmos, dentro do limite que o dono define.
+// Supervisores e gerentes ativos, de qualquer área: podem tirar lista para si mesmos, dentro do limite que o dono define.
 export const LEADERSHIP_GROUP = "Supervisores e gerentes"
-const isLeadership = (member: CRMMember) => member.active && member.area === "SALES" && (member.role === "SUPERVISOR" || member.role === "MANAGER")
+const isLeadership = (member: CRMMember) => member.active && (member.role === "SUPERVISOR" || member.role === "MANAGER")
 export const leadershipLabel = (member: CRMMember) => member.role === "MANAGER" ? "Gerente" : "Supervisor"
 
 export async function getLeadershipMembers() {
