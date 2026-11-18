@@ -5,7 +5,7 @@ import { Prisma } from "@prisma/client"
 import { prisma } from "@/lib/prisma"
 import { getAuthenticatedUser } from "@/lib/auth"
 import { getInitialUsers } from "@/lib/server-users"
-import { syncCRMConsultants } from "@/lib/crm-members"
+import { syncListRecipients } from "@/lib/crm-members"
 import { canViewGlobalLeadCounts } from "@/lib/lead-visibility"
 
 export const runtime = "nodejs"
@@ -34,7 +34,7 @@ export async function GET(req: Request) {
     if (!campaign) return NextResponse.json({ ok: true, campaign: null, consultants: [], allocations: [], available: countsVisible ? 0 : null, countsVisible })
 
     const [consultants, available, allocations, crmProblems] = await Promise.all([
-      syncCRMConsultants(user),
+      syncListRecipients(user),
       countsVisible ? findAvailableCampaignLeads(prisma, campaign.nicho, undefined, user.id).then((leads) => leads.length) : Promise.resolve(null),
       prisma.blackFridayLead.findMany({
         where: { campaignId: campaign.id, ...(user.role === "admin" ? {} : { supervisorId: user.id }) },
@@ -52,7 +52,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       campaign: { id: campaign.id, year: campaign.year, name: campaign.name, endsAt: campaign.endsAt },
-      consultants: consultants.filter((consultant) => !hiddenUserNames.has(consultant.name.trim().toLowerCase())),
+      consultants: consultants.filter((consultant) => consultant.isSelf || !hiddenUserNames.has(consultant.name.trim().toLowerCase())),
       available,
       countsVisible,
       allocations: allocations.map(({ lead, consultant, ...assignment }) => ({
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
     const campaign = await getActiveCampaign()
     if (!campaign) return NextResponse.json({ ok: false, error: "campaign_not_active" }, { status: 409 })
     stage = "validate_consultant"
-    const allowedConsultants = await syncCRMConsultants(user)
+    const allowedConsultants = await syncListRecipients(user)
     if (!allowedConsultants.some((consultant) => consultant.id === consultantId)) {
       return NextResponse.json({ ok: false, error: "consultant_outside_team" }, { status: 403 })
     }

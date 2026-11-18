@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 
 type CampaignData = {
   campaign: { id: number; year: number; name: string; endsAt: string } | null
-  consultants: Array<{ id: string; name: string; supervisorId: string }>
+  consultants: Array<{ id: string; name: string; supervisorId: string; isSelf?: boolean }>
   available: number | null
   countsVisible: boolean
   allocations: Array<{
@@ -210,7 +210,7 @@ export function BlackFridayPanel() {
                 Consultor
                 <select value={selectedConsultant} onChange={(event) => setSelectedConsultant(event.target.value)} className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm" disabled={submitting}>
                   <option value="">Selecione um consultor</option>
-                  {data.consultants.map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}
+                  {data.consultants.map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.isSelf ? `${consultant.name} (para mim)` : consultant.name}</option>)}
                 </select>
               </label>
               <label className="space-y-2 text-sm font-medium">
