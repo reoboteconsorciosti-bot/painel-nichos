@@ -118,7 +118,7 @@ export async function syncCRMConsultants(user: SyncUser, preloaded?: CRMMember[]
 
     if (!seen.has(consultant.id)) {
       seen.add(consultant.id)
-      synced.push({ ...consultant, crmUserId: member.id, photoUrl: member.photoUrl, teamId: member.teamId, teamName, supervisorName, isSelf: false })
+      synced.push({ ...consultant, crmUserId: member.id, photoUrl: member.photoUrl, teamId: member.teamId, teamName, supervisorName, isSelf: false, leaderLabel: undefined as string | undefined })
     }
   }
   return synced
@@ -140,9 +140,18 @@ export async function getLeadershipMembers() {
 export async function syncListRecipients(user: SyncUser) {
   const members = await getCRMMembers()
   const consultants = await syncCRMConsultants(user, members)
-  if (user.role === "admin") return consultants
+  if (user.role === "admin") {
+    // O dono também pode entregar para supervisores e gerentes (sem posição histórica: leaderLabel marca quem são).
+    const known = new Set(consultants.map(c => c.crmUserId))
+    const leaders = members.filter(member => isLeadership(member) && !known.has(member.id)).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+    const rows = await Promise.all(leaders.map(async leader => {
+      const row = await upsertConsultantRow(leader, leader.id)
+      return { ...row, crmUserId: leader.id, photoUrl: leader.photoUrl, teamId: leader.teamId, teamName: LEADERSHIP_GROUP, supervisorName: leader.name, isSelf: false, leaderLabel: leadershipLabel(leader) }
+    }))
+    return [...consultants, ...rows]
+  }
   const self = members.find(member => member.id === user.id)
   if (!self || !isLeadership(self)) return consultants
   const row = await upsertConsultantRow(self, self.id)
-  return [...consultants, { ...row, crmUserId: self.id, photoUrl: self.photoUrl, teamId: self.teamId, teamName: self.team?.name ?? LEADERSHIP_GROUP, supervisorName: self.name, isSelf: true }]
+  return [...consultants, { ...row, crmUserId: self.id, photoUrl: self.photoUrl, teamId: self.teamId, teamName: self.team?.name ?? LEADERSHIP_GROUP, supervisorName: self.name, isSelf: true, leaderLabel: undefined as string | undefined }]
 }

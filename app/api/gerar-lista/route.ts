@@ -284,7 +284,7 @@ export async function POST(req: Request) {
   )
   if (selectedConsultantIndex < 0) return NextResponse.json({ ok: false, error: "consultant_outside_team" }, { status: 403 })
   // Posição histórica só para quem é da equipe. Supervisor e gerente (para si) ficam com 0, sem herdar uso de outra pessoa.
-  const consultorId = currentConsultants[selectedConsultantIndex]!.isSelf ? 0 : selectedConsultantIndex + 1
+  const consultorId = currentConsultants[selectedConsultantIndex]!.isSelf || currentConsultants[selectedConsultantIndex]!.leaderLabel ? 0 : selectedConsultantIndex + 1
 
   const baseWhere = {
     ...buildNichoWhere(nicho),

@@ -188,7 +188,7 @@ export const ESTADOS: Estado[] = [
   { sigla: "RO", nome: "Rondonia", cidades: ["Porto Velho", "Ji-Parana", "Ariquemes"] },
   { sigla: "RR", nome: "Roraima", cidades: ["Boa Vista", "Rorainopolis"] },
   { sigla: "SC", nome: "Santa Catarina", cidades: ["Florianopolis", "Joinville", "Blumenau", "Chapeco", "Itajai"] },
-  { sigla: "SP", nome: "Sao Paulo", cidades: ["Sao Paulo", "Guarulhos", "Campinas", "Sao Bernardo do Campo", "Ribeiro Preto", "Santos", "Sorocaba"] },
+  { sigla: "SP", nome: "Sao Paulo", cidades: ["Sao Paulo", "Guarulhos", "Campinas", "Sao Bernardo do Campo", "Ribeiro Preto", "Santos", "Sorocaba", "Marilia"] },
   { sigla: "SE", nome: "Sergipe", cidades: ["Aracaju", "Nossa Senhora do Socorro", "Lagarto"] },
   { sigla: "TO", nome: "Tocantins", cidades: ["Palmas", "Araguaina", "Gurupi"] },
 ]
@@ -207,6 +207,7 @@ export interface Consultant {
   name: string
   supervisorId: string // Vincula o consultor ao ID do supervisor
   crmUserId?: string
+  leaderLabel?: string // "Supervisor" ou "Gerente" quando o dono escolhe um líder como destino
   isSelf?: boolean // o próprio supervisor/gerente, que tira lista para si
 }
 

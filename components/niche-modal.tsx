@@ -120,7 +120,7 @@ export function NicheModal({ isOpen, onClose, activeNicheId, onGenerate, onCheck
                             <label htmlFor="list-consultant" className="text-sm font-semibold">3. Para quem?</label>
                             <Select value={consultantId} onValueChange={value => { setConsultantId(value); setError(null) }} disabled={submitting}>
                                 <SelectTrigger id="list-consultant" className="h-10 w-full min-w-0 bg-background"><SelectValue placeholder="Selecione quem vai receber" /></SelectTrigger>
-                                <SelectContent>{[...consultants].filter(c => c.crmUserId).sort((a, b) => Number(!!b.isSelf) - Number(!!a.isSelf)).map(c => <SelectItem key={c.crmUserId} value={c.crmUserId!}>{c.isSelf ? `${c.name} (para mim)` : c.name}</SelectItem>)}</SelectContent>
+                                <SelectContent>{[...consultants].filter(c => c.crmUserId).sort((a, b) => Number(!!b.isSelf) - Number(!!a.isSelf)).map(c => <SelectItem key={c.crmUserId} value={c.crmUserId!}>{c.isSelf ? `${c.name} (para mim)` : c.leaderLabel ? `${c.name} (${c.leaderLabel})` : c.name}</SelectItem>)}</SelectContent>
                             </Select>
                             {consultants.filter(c => c.crmUserId).length === 0 && <p className="text-xs text-muted-foreground">Nenhum consultor disponível na equipe.</p>}
                         </section>
